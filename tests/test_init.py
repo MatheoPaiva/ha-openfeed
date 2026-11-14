@@ -97,6 +97,8 @@ def _mock_api(aioclient_mock, revoked: bool = False):
     aioclient_mock.get(f"{a}/billing", json={"data": [
         {"accountId": ACC, "executionDateTime": f"{dt_util.now(AEST).date().replace(day=1).isoformat()}T09:00:00+10:00",
          "transactionUType": "usage", "amount": 12.5, "description": "Usage"},
+        {"accountId": ACC, "executionDateTime": f"{dt_util.now(AEST).date().replace(day=1).isoformat()}T09:00:00+10:00",
+         "transactionUType": "usage", "amount": -4.0, "description": "Feed-in credit"},
         {"accountId": ACC, "executionDateTime": "2026-09-03T09:00:00+10:00",
          "transactionUType": "payment", "amount": -100.0},
     ]})
@@ -129,6 +131,7 @@ async def test_setup_creates_sensors_and_statistics(hass, entry, aioclient_mock)
     assert "decommissioned_records_listed" in issues.attributes["issues"]
     assert states["sensor.energy_home_plan"].state == "Wholesale"
     assert float(states["sensor.energy_home_month_to_date_charges"].state) == 12.5
+    assert float(states["sensor.energy_home_month_to_date_credits"].state) == 4.0
     invoice = next(s for e, s in states.items() if "invoice_amount" in e)
     assert float(invoice.state) == 88.10
     assert states["sensor.energy_home_latest_invoice_status"].state == "NOT_PAID"
@@ -146,6 +149,7 @@ async def test_setup_creates_sensors_and_statistics(hass, entry, aioclient_mock)
     assert any(i.endswith("_charges") for i in ids)
     assert any(i.endswith("_invoiced") for i in ids)
     assert any(i.endswith("_payments") for i in ids)
+    assert any(i.endswith("_credits") for i in ids)
 
     # Every API call carried a DPoP-bound token.
     for method, url, data, headers in aioclient_mock.mock_calls:
@@ -180,8 +184,11 @@ async def test_diagnostics_redacts(hass, entry, aioclient_mock) -> None:
     await hass.async_block_till_done()
     diag = await async_get_config_entry_diagnostics(hass, entry)
     text = str(diag)
-    for secret in ("BEGIN PRIVATE KEY", "'rt'", NMI, ACC, METER, "user-1", "Home"):
+    for secret in ("BEGIN PRIVATE KEY", "'rt'", NMI, ACC, METER, "user-1", "Home", "Feed-in credit"):
         assert secret not in text
+    lines = diag["energy"]["account_0"]["billing_lines"]
+    assert {line["amount"] for line in lines} == {12.5, -4.0, -100.0}
+    assert diag["energy"]["account_0"]["history"]["series_totals"]["payments"] == -100.0
 
 
 async def test_plan_sensor_removed_when_no_plan(hass, entry, aioclient_mock) -> None:

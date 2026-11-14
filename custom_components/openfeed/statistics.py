@@ -6,7 +6,7 @@ consumption and return to grid. Each meter also gets
 openfeed:<meter_key>_<series>_power in kW (hourly mean, min and max of the
 meter's interval reads), which keeps peak demand and peak export that the
 hourly energy sums hide. Each account gets money series
-openfeed:<account_key>_<charges|payments|invoiced>. Each refresh re-imports a trailing window,
+openfeed:<account_key>_<charges|credits|payments|invoiced>. Each refresh re-imports a trailing window,
 restarting the running sum from the last statistic before the window, so
 finalised substitute reads overwrite earlier values.
 """
@@ -32,7 +32,7 @@ from homeassistant.const import UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
-from .billing import CHARGES, INVOICED, PAYMENTS
+from .billing import CHARGES, CREDITS, INVOICED, PAYMENTS
 from .usage import CONSUMPTION, CONTROLLED_LOAD, EXPORT, cumulative
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,7 +51,8 @@ POWER_NAMES = {
 
 MONEY_NAMES = {
     CHARGES: "billed charges",
-    PAYMENTS: "payments",
+    CREDITS: "billed credits",
+    PAYMENTS: "payments (signed as reported)",
     INVOICED: "invoiced",
 }
 

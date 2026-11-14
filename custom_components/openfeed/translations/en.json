@@ -124,6 +124,9 @@
       },
       "der_register_issues": {
         "name": "DER register issues"
+      },
+      "month_to_date_credits": {
+        "name": "Month-to-date credits"
       }
     }
   }

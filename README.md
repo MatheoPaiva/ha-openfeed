@@ -39,8 +39,8 @@ data and asks you to reconnect.
 | Account balance | `sensor.energy_<account>_account_balance` | Live, cached up to 15 minutes |
 | Latest invoice amount, due date, status | `sensor.energy_<account>_latest_invoice_*` | Hourly poll |
 | Plan name and tariff detail | `sensor.energy_<account>_plan` (only when the retailer shares a plan) | Daily |
-| Month-to-date charges | `sensor.energy_<account>_month_to_date_charges` (only when the retailer shares billing transactions) | Every 6 hours |
-| Billing and invoice history | External statistics `openfeed:acct_<hash>_charges`, `_payments`, `_invoiced` (AUD) | Every 6 hours |
+| Month-to-date charges and credits | `sensor.energy_<account>_month_to_date_charges`, `_credits`, with a split by transaction type (only when the retailer shares billing transactions) | Every 6 hours |
+| Billing and invoice history | External statistics `openfeed:acct_<hash>_charges` (gross charges), `_credits` (credits, as a positive amount), `_payments` (signed as the retailer reports them), `_invoiced` (AUD) | Every 6 hours |
 | DER approved capacity and export limit | `sensor.meter_<nmi>_der_*` (when the retailer publishes DER data) | Hourly poll |
 | DER equipment and solar capacity | `sensor.meter_<nmi>_der_solar_capacity`, with every inverter and device as attributes | Hourly poll |
 | DER register issues | `sensor.meter_<nmi>_der_register_issues` | Hourly poll |
@@ -65,6 +65,14 @@ day you connect even if openfeed only holds a rolling window.
 Home Assistant long-term statistics are hourly. The energy statistics are hourly sums;
 the power statistics keep the hourly maximum of the meter's own interval reads, so a
 5-minute peak is not lost.
+
+### Billing
+
+Retailers usually date every billing line on the statement date, so the money
+statistics step once a month rather than daily. Payments keep the retailer's sign, so a
+refund paid out and a payment received have opposite signs. Diagnostics list every
+billing line (date, type, amount, GST) without descriptions, invoice numbers or meter
+IDs, so you can check how your retailer reports credits and refunds.
 
 ### DER register
 

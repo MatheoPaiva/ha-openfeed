@@ -66,6 +66,7 @@ async def async_get_config_entry_diagnostics(
                     "usage_fetched_at": str(meter.usage_fetched_at),
                 }
             )
+        b = account.billing
         energy[f"account_{index}"] = {
             "account": account.account,
             "balance_status": account.balance_status,
@@ -73,12 +74,17 @@ async def async_get_config_entry_diagnostics(
             "plan_shared": account.plan is not None,
             "history": {
                 "invoices": account.invoice_count,
-                "oldest_invoice": str(b.oldest_invoice) if (b := account.billing) else None,
+                "oldest_invoice": str(b.oldest_invoice) if b else None,
                 "billing_status": account.billing_status,
                 "billing_transactions": b.transactions if b else None,
                 "oldest_transaction": str(b.oldest_transaction) if b else None,
                 "money_series": {s: len(v) for s, v in b.hourly.items()} if b else None,
+                "series_totals": (
+                    {s: round(sum(v.values()), 2) for s, v in b.hourly.items()} if b else None
+                ),
             },
+            # Date, type, amount and GST only; no descriptions, invoice or meter IDs.
+            "billing_lines": b.lines if b else None,
             "meters": meters,
         }
     return async_redact_data(

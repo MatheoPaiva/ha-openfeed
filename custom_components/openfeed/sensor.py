@@ -73,7 +73,8 @@ def _billing_attrs(a: EnergyAccountData) -> dict[str, Any]:
     b = a.billing
     key = account_key(a.account["accountId"])
     return {
-        "by_type": b.by_type if b else None,
+        "charges_by_type": b.charges_by_type if b else None,
+        "credits_by_type": b.credits_by_type if b else None,
         "transactions": b.transactions if b else None,
         "oldest_transaction": b.oldest_transaction.isoformat() if b and b.oldest_transaction else None,
         "statistic_prefix": f"{DOMAIN}:{key}_",
@@ -147,6 +148,16 @@ ACCOUNT_SENSORS: tuple[AccountSensorDescription, ...] = (
         device_class=SensorDeviceClass.MONETARY,
         suggested_display_precision=2,
         value_fn=lambda a: a.billing.month_to_date_charges if a.billing else None,
+        attrs_fn=_billing_attrs,
+        available_fn=lambda a: a.billing is not None and a.billing.transactions > 0,
+        exists_fn=lambda a: a.billing is not None and a.billing.transactions > 0,
+    ),
+    AccountSensorDescription(
+        key="month_to_date_credits",
+        translation_key="month_to_date_credits",
+        device_class=SensorDeviceClass.MONETARY,
+        suggested_display_precision=2,
+        value_fn=lambda a: a.billing.month_to_date_credits if a.billing else None,
         attrs_fn=_billing_attrs,
         available_fn=lambda a: a.billing is not None and a.billing.transactions > 0,
         exists_fn=lambda a: a.billing is not None and a.billing.transactions > 0,
