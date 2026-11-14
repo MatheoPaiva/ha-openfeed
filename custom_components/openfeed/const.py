@@ -11,6 +11,8 @@ DEFAULT_RESOURCE: Final = "https://api.openfeed.au"
 DEFAULT_API_BASE: Final = "https://api.openfeed.au"
 CONSENT_URL: Final = "https://app.openfeed.au/grants/disclosure"
 DASHBOARD_URL: Final = "https://app.openfeed.au"
+# Opens Settings > Dashboards > Energy, where the meter statistics are added.
+ENERGY_CONFIG_URL: Final = "homeassistant://config/energy"
 REGISTER_URL: Final = "https://app.openfeed.au/registered-apps/new"
 
 SCOPE_OPENID: Final = "openid"

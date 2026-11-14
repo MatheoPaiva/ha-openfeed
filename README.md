@@ -44,6 +44,10 @@ data and asks you to reconnect.
 | DER approved capacity and export limit | `sensor.meter_<nmi>_der_*` (when the retailer publishes DER data) | Hourly poll |
 | DER equipment and solar capacity | `sensor.meter_<nmi>_der_solar_capacity`, with every inverter and device as attributes | Hourly poll |
 | DER register issues | `sensor.meter_<nmi>_der_register_issues` | Hourly poll |
+| Month-to-date and last 30 days grid import and export | `sensor.meter_<nmi>_month_to_date_grid_*`, `_last_30_days_grid_*` (kWh, full days only) | With usage |
+| Last statement charges and credits | `sensor.<account>_last_statement_charges`, `_credits` (with net and the statistic IDs as attributes) | Every 6 hours |
+| Bills calendar | `calendar.<account>_bills`: one event per invoice, from issue date to due date, with amount and status | Hourly poll |
+| Usage history held | `sensor.meter_<nmi>_usage_history` (days, with oldest date and every statistic ID) | With usage |
 | Substituted intervals | `sensor.meter_<nmi>_substituted_intervals` | With usage |
 | Bank current and available balance (optional) | `sensor.bank_<account>_*_balance` | Live, cached up to 15 minutes |
 
@@ -53,6 +57,20 @@ the integration options, up to 365). After that the last 7 days are re-imported 
 3 hours so late and substituted reads are corrected.
 
 Basic (accumulation) meter reads are not imported to statistics; only interval reads are.
+
+### Finding the data
+
+Most of the history lives in long-term statistics, which have no entity. Three places
+surface it:
+
+- **Sensors and calendar.** The summary sensors and bills calendar above answer the
+  common questions directly, and each lists the statistic IDs it relates to.
+- **Device page.** The meter device's **Visit** link opens the Energy settings, where
+  you can add the import and export statistics as a grid source. Only do this if no
+  other grid meter feeds your Energy dashboard, or energy is counted twice.
+- **Ready-made dashboard.** [docs/dashboard.yaml](docs/dashboard.yaml) is a view with
+  month-to-date totals, daily energy, daily peaks, monthly billing, the bills calendar
+  and the DER register. Replace the placeholders and paste it into a dashboard.
 
 ### How much history
 

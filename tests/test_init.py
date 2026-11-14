@@ -132,6 +132,33 @@ async def test_setup_creates_sensors_and_statistics(hass, entry, aioclient_mock)
     assert states["sensor.energy_home_plan"].state == "Wholesale"
     assert float(states["sensor.energy_home_month_to_date_charges"].state) == 12.5
     assert float(states["sensor.energy_home_month_to_date_credits"].state) == 4.0
+    assert float(states["sensor.energy_home_last_statement_charges"].state) == 12.5
+    statement = states["sensor.energy_home_last_statement_credits"]
+    assert float(statement.state) == 4.0
+    assert statement.attributes["net"] == 8.5
+    assert float(states[f"{meter}_last_30_days_grid_import"].state) == 48.0
+    assert float(states[f"{meter}_last_30_days_grid_export"].state) == 24.0
+    history = states[f"{meter}_usage_history"]
+    assert int(history.state) == 2
+    assert f"openfeed:nmi_{NMI.lower()}_consumption" in history.attributes["statistics"]
+
+    # The bills calendar holds one event per invoice.
+    assert "calendar.energy_home_bills" in {s.entity_id for s in hass.states.async_all("calendar")}
+    result = await hass.services.async_call(
+        "calendar", "get_events",
+        {"entity_id": "calendar.energy_home_bills", "start_date_time": "2026-08-01T00:00:00+10:00",
+         "end_date_time": "2026-11-01T00:00:00+10:00"},
+        blocking=True, return_response=True,
+    )
+    events = result["calendar.energy_home_bills"]["events"]
+    assert [e["summary"] for e in events] == [
+        "Energy bill AUD 100.00 (PAID)", "Energy bill AUD 88.10 (NOT_PAID)"]
+    assert events[0]["start"] == "2026-09-01" and events[0]["end"] == "2026-09-16"
+
+    # The meter device links to the Energy settings.
+    from homeassistant.helpers import device_registry as dr
+    device = dr.async_get(hass).async_get_device_by_identifier((DOMAIN, f"meter_nmi_{NMI.lower()}"), entry.entry_id)
+    assert device.configuration_url == "homeassistant://config/energy"
     invoice = next(s for e, s in states.items() if "invoice_amount" in e)
     assert float(invoice.state) == 88.10
     assert states["sensor.energy_home_latest_invoice_status"].state == "NOT_PAID"

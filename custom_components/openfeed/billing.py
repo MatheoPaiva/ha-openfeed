@@ -46,6 +46,10 @@ class BillingSummary:
     month_to_date_credits: float | None = None
     charges_by_type: dict[str, float] = field(default_factory=dict)
     credits_by_type: dict[str, float] = field(default_factory=dict)
+    # The latest AEST date with charge or credit lines, and its totals.
+    last_statement_date: date | None = None
+    last_statement_charges: float | None = None
+    last_statement_credits: float | None = None
     # Newest first: {"date", "type", "amount", "gst", "has_invoice", "has_meter"}
     lines: list[dict[str, Any]] = field(default_factory=list)
 
@@ -75,6 +79,24 @@ def _num(value: Any) -> float | None:
 
 def _round(values: dict[str, float]) -> dict[str, float]:
     return {k: round(v, 2) for k, v in sorted(values.items())}
+
+
+def _last_statement(summary: BillingSummary) -> None:
+    """Totals for the latest AEST date that carries charge or credit lines.
+
+    Retailers usually date every line on the statement date, so this is the
+    most recent statement.
+    """
+    per_day: dict[date, list[float]] = defaultdict(lambda: [0.0, 0.0])
+    for index, series in enumerate((CHARGES, CREDITS)):
+        for hour, amount in summary.hourly.get(series, {}).items():
+            per_day[hour.astimezone(AEST).date()][index] += amount
+    if not per_day:
+        return
+    day = max(per_day)
+    summary.last_statement_date = day
+    summary.last_statement_charges = round(per_day[day][0], 2)
+    summary.last_statement_credits = round(per_day[day][1], 2)
 
 
 def summarise_billing(
@@ -136,6 +158,7 @@ def summarise_billing(
             summary.oldest_invoice = local_day
         hourly[INVOICED][issued.replace(minute=0, second=0, microsecond=0)] += amount
     summary.hourly = {s: dict(sorted(v.items())) for s, v in hourly.items() if v}
+    _last_statement(summary)
     summary.lines = [line for _when, line in sorted(lines, key=lambda x: x[0], reverse=True)][
         :MAX_LINES
     ]

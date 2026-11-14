@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -24,8 +24,9 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
-from .const import DASHBOARD_URL, DOMAIN
+from .const import DASHBOARD_URL, DOMAIN, ENERGY_CONFIG_URL
 from .coordinator import (
     BankingAccountData,
     EnergyAccountData,
@@ -34,9 +35,10 @@ from .coordinator import (
     OpenfeedCoordinator,
     latest_day_peak,
     latest_day_total,
+    period_total,
 )
 from .statistics import account_key
-from .usage import CONSUMPTION, CONTROLLED_LOAD, EXPORT
+from .usage import AEST, CONSUMPTION, CONTROLLED_LOAD, EXPORT
 
 
 def _num(value: Any) -> float | None:
@@ -84,6 +86,24 @@ def _billing_attrs(a: EnergyAccountData) -> dict[str, Any]:
 
 def _invoice(a: EnergyAccountData, key: str) -> Any:
     return (a.latest_invoice or {}).get(key)
+
+
+def _statement_attrs(a: EnergyAccountData) -> dict[str, Any]:
+    b = a.billing
+    if b is None or b.last_statement_date is None:
+        return {}
+    charges = b.last_statement_charges or 0.0
+    credits = b.last_statement_credits or 0.0
+    return {
+        "statement_date": b.last_statement_date.isoformat(),
+        "charges": charges,
+        "credits": credits,
+        "net": round(charges - credits, 2),
+        "statistics": [
+            f"{DOMAIN}:{account_key(a.account['accountId'])}_{s}"
+            for s in ("charges", "credits", "payments", "invoiced")
+        ],
+    }
 
 
 ACCOUNT_SENSORS: tuple[AccountSensorDescription, ...] = (
@@ -153,6 +173,26 @@ ACCOUNT_SENSORS: tuple[AccountSensorDescription, ...] = (
         exists_fn=lambda a: a.billing is not None and a.billing.transactions > 0,
     ),
     AccountSensorDescription(
+        key="last_statement_charges",
+        translation_key="last_statement_charges",
+        device_class=SensorDeviceClass.MONETARY,
+        suggested_display_precision=2,
+        value_fn=lambda a: a.billing.last_statement_charges if a.billing else None,
+        attrs_fn=lambda a: _statement_attrs(a),
+        available_fn=lambda a: bool(a.billing and a.billing.last_statement_date),
+        exists_fn=lambda a: a.billing is not None and a.billing.transactions > 0,
+    ),
+    AccountSensorDescription(
+        key="last_statement_credits",
+        translation_key="last_statement_credits",
+        device_class=SensorDeviceClass.MONETARY,
+        suggested_display_precision=2,
+        value_fn=lambda a: a.billing.last_statement_credits if a.billing else None,
+        attrs_fn=lambda a: _statement_attrs(a),
+        available_fn=lambda a: bool(a.billing and a.billing.last_statement_date),
+        exists_fn=lambda a: a.billing is not None and a.billing.transactions > 0,
+    ),
+    AccountSensorDescription(
         key="month_to_date_credits",
         translation_key="month_to_date_credits",
         device_class=SensorDeviceClass.MONETARY,
@@ -199,6 +239,54 @@ def _peak_sensor(series: str, key: str) -> MeterSensorDescription:
         attrs_fn=attrs,
         exists_fn=lambda m: bool(m.usage and m.usage.daily_peak.get(series)),
     )
+
+
+def _period_sensor(series: str, key: str, period: str) -> MeterSensorDescription:
+    """kWh over the month to date or the last 30 full days (today excluded)."""
+
+    def bounds() -> tuple[date, date]:
+        today = dt_util.now(AEST).date()
+        if period == "month":
+            return today.replace(day=1), today
+        return today - timedelta(days=30), today
+
+    def value(m: MeterData) -> float | None:
+        start, end = bounds()
+        total = period_total(m.daily_history, series, start, end)
+        return total[0] if total else None
+
+    def attrs(m: MeterData) -> dict[str, Any]:
+        start, end = bounds()
+        total = period_total(m.daily_history, series, start, end)
+        return {
+            "start": start.isoformat(),
+            "end": (end - timedelta(days=1)).isoformat(),
+            "days_with_data": total[1] if total else 0,
+            "long_term_statistic": f"{DOMAIN}:{m.key}_{series}",
+        }
+
+    return MeterSensorDescription(
+        key=key,
+        translation_key=key,
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=1,
+        value_fn=value,
+        attrs_fn=attrs,
+        exists_fn=lambda m: bool(m.daily_history.get(series)),
+    )
+
+
+def _history_attrs(m: MeterData) -> dict[str, Any]:
+    days = sorted({d for v in m.daily_history.values() for d in v})
+    return {
+        "oldest": days[0].isoformat() if days else None,
+        "latest": days[-1].isoformat() if days else None,
+        "statistics": [
+            f"{DOMAIN}:{m.key}_{s}"
+            for s in (CONSUMPTION, EXPORT, f"{CONSUMPTION}_power", f"{EXPORT}_power")
+        ],
+    }
 
 
 def _der_summary_attrs(m: MeterData) -> dict[str, Any]:
@@ -268,6 +356,19 @@ METER_SENSORS: tuple[MeterSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfApparentPower.KILO_VOLT_AMPERE,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda m: _num(((m.der or {}).get("protectionMode") or {}).get("exportLimitKva")),
+    ),
+    _period_sensor(CONSUMPTION, "month_to_date_import", "month"),
+    _period_sensor(EXPORT, "month_to_date_export", "month"),
+    _period_sensor(CONSUMPTION, "last_30_days_import", "30d"),
+    _period_sensor(EXPORT, "last_30_days_export", "30d"),
+    MeterSensorDescription(
+        key="usage_history_days",
+        translation_key="usage_history_days",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        native_unit_of_measurement="d",
+        value_fn=lambda m: len({d for v in m.daily_history.values() for d in v}) or None,
+        attrs_fn=_history_attrs,
+        exists_fn=lambda m: bool(m.daily_history),
     ),
     _peak_sensor(CONSUMPTION, "latest_day_peak_import"),
     _peak_sensor(EXPORT, "latest_day_peak_export"),
@@ -361,6 +462,20 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
+def energy_device_info(coordinator: OpenfeedCoordinator, account_id: str) -> DeviceInfo:
+    """The device shared by every entity for one energy account."""
+    account = coordinator.data.energy[account_id].account
+    number = str(account.get("accountNumber") or "")[-4:]
+    return DeviceInfo(
+        identifiers={(DOMAIN, f"energy_{account_id}")},
+        name=f"{account.get('providerName', 'Energy')} {account.get('displayName') or number}".strip(),
+        manufacturer=account.get("providerName"),
+        model="Energy account (CDR)",
+        entry_type=DeviceEntryType.SERVICE,
+        configuration_url=DASHBOARD_URL,
+    )
+
+
 class _Base(CoordinatorEntity[OpenfeedCoordinator], SensorEntity):
     _attr_has_entity_name = True
     _attr_attribution = "Consumer Data Right data via openfeed"
@@ -374,17 +489,8 @@ class EnergyAccountSensor(_Base):
         super().__init__(coordinator)
         self.entity_description = description
         self._account_id = account_id
-        account = coordinator.data.energy[account_id].account
         self._attr_unique_id = f"{coordinator.config_entry.unique_id}_{account_id}_{description.key}"
-        number = str(account.get("accountNumber") or "")[-4:]
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"energy_{account_id}")},
-            name=f"{account.get('providerName', 'Energy')} {account.get('displayName') or number}".strip(),
-            manufacturer=account.get("providerName"),
-            model="Energy account (CDR)",
-            entry_type=DeviceEntryType.SERVICE,
-            configuration_url=DASHBOARD_URL,
-        )
+        self._attr_device_info = energy_device_info(coordinator, account_id)
         if description.device_class == SensorDeviceClass.MONETARY:
             balance = coordinator.data.energy[account_id].balance or {}
             self._attr_native_unit_of_measurement = balance.get("currency") or "AUD"
@@ -427,6 +533,7 @@ class MeterSensor(_Base):
             model=f"Service point ({meter.meter.get('detectedReadType') or 'unknown'} reads)",
             serial_number=nmi,
             entry_type=DeviceEntryType.SERVICE,
+            configuration_url=ENERGY_CONFIG_URL,
         )
 
     @property

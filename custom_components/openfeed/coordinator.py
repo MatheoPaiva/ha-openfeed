@@ -50,6 +50,9 @@ from .statistics import (
 )
 from .usage import AEST, UsageSummary, summarise, usage_windows
 
+# Keep enough merged daily totals for 30-day and month-to-date sensors.
+HISTORY_KEEP_DAYS = 400
+
 _LOGGER = logging.getLogger(__name__)
 
 ISSUE_CREDITS = "credit_exhausted"
@@ -66,6 +69,8 @@ class MeterData:
     der_summary: DerSummary | None = None
     usage: UsageSummary | None = None
     usage_fetched_at: datetime | None = None
+    # series -> AEST date -> kWh, merged across refreshes (backfill plus restatements)
+    daily_history: dict[str, dict[date, float]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -76,6 +81,7 @@ class EnergyAccountData:
     balance: dict[str, Any] | None = None
     balance_status: str = "ok"
     latest_invoice: dict[str, Any] | None = None
+    invoices: list[dict[str, Any]] = field(default_factory=list)
     invoice_count: int = 0
     billing: BillingSummary | None = None
     billing_status: str = "not_fetched"
@@ -132,6 +138,8 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
         self.session = session
         self._usage_cache: dict[str, MeterData] = {}
         self._backfilled: set[str] = set()
+        # meter ID -> series -> AEST date -> kWh, merged across refreshes
+        self._daily_history: dict[str, dict[str, dict[date, float]]] = {}
         # account ID -> (fetched at, plans list or None)
         self._plan_cache: dict[str, tuple[datetime, list[dict[str, Any]] | None]] = {}
         # account ID -> (fetched at, status, summary)
@@ -152,6 +160,7 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
             # Revocation is a hard stop: purge cached data and the grant,
             # then ask the user to reconnect.
             self._usage_cache.clear()
+            self._daily_history.clear()
             self._plan_cache.clear()
             self._billing_cache.clear()
             self.session.clear_grant()
@@ -206,6 +215,7 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
         if isinstance(invoices, list):
             item.latest_invoice = _latest_invoice(invoices)
             item.invoice_count = len(invoices)
+            item.invoices = invoices
         if isinstance(meters, OpenfeedApiError):
             raise meters
         await self._apply_billing(item, invoices if isinstance(invoices, list) else [])
@@ -274,6 +284,7 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
         else:
             md.usage = await self._refresh_usage(md)
             md.usage_fetched_at = now
+        md.daily_history = self._daily_history.get(meter_id, {})
         self._usage_cache[meter_id] = md
         return md
 
@@ -293,6 +304,13 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
                 )
             )
         summary = summarise(records)
+        history = self._daily_history.setdefault(md.meter["meterId"], {})
+        cutoff = today - timedelta(days=HISTORY_KEEP_DAYS)
+        for series, days_kwh in summary.daily.items():
+            merged = history.setdefault(series, {})
+            merged.update(days_kwh)
+            for day in [d for d in merged if d < cutoff]:
+                del merged[day]
         if summary.hourly:
             label = f"openfeed {md.meter.get('nationalMeteringId') or md.key}"
             await async_import_meter(self.hass, md.key, label, summary.hourly)
@@ -310,6 +328,19 @@ def _apply_balance(item: EnergyAccountData | BankingAccountData, result: Any) ->
         item.balance_status = "error"
     else:
         item.balance = result
+
+
+def period_total(
+    history: dict[str, dict[date, float]],
+    series: str,
+    start: date,
+    end: date,
+) -> tuple[float, int] | None:
+    """kWh and days with data for start <= day < end, or None with no data."""
+    days = {d: v for d, v in (history.get(series) or {}).items() if start <= d < end}
+    if not days:
+        return None
+    return round(sum(days.values()), 3), len(days)
 
 
 def latest_day_peak(

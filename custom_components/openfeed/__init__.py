@@ -13,7 +13,7 @@ from .coordinator import OpenfeedConfigEntry, OpenfeedCoordinator
 from .session import OpenfeedSession
 from .views import async_register_views
 
-PLATFORMS: list[Platform] = [Platform.SENSOR]
+PLATFORMS: list[Platform] = [Platform.CALENDAR, Platform.SENSOR]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 

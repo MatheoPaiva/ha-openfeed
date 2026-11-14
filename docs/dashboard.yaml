@@ -1,0 +1,80 @@
+# openfeed dashboard view for Home Assistant.
+#
+# Replace four placeholders before pasting:
+#   <nmi>       your NMI in lower case, as in sensor.meter_<nmi>_usage_history
+#   <nmi_key>   nmi_ followed by the same NMI, as in openfeed:nmi_<nmi>_consumption
+#   <account>   the energy account device slug, as in sensor.<account>_account_balance
+#   <acct_key>  the account statistic key, shown in the "statistics" attribute of
+#               sensor.<account>_last_statement_charges (openfeed:<acct_key>_charges)
+#
+# Paste as a new view: Settings > Dashboards > open a dashboard > Edit >
+# three-dot menu > Raw configuration editor, and add this under "views:".
+title: Energy account
+path: openfeed
+icon: mdi:transmission-tower
+cards:
+  - type: entities
+    title: This month
+    entities:
+      - entity: sensor.meter_<nmi>_month_to_date_grid_import
+      - entity: sensor.meter_<nmi>_month_to_date_grid_export
+      - entity: sensor.<account>_month_to_date_charges
+      - entity: sensor.<account>_month_to_date_credits
+      - entity: sensor.<account>_account_balance
+  - type: entities
+    title: Last 30 days and latest day
+    entities:
+      - entity: sensor.meter_<nmi>_last_30_days_grid_import
+      - entity: sensor.meter_<nmi>_last_30_days_grid_export
+      - entity: sensor.meter_<nmi>_latest_day_grid_consumption
+      - entity: sensor.meter_<nmi>_latest_day_grid_export
+      - entity: sensor.meter_<nmi>_latest_day_peak_grid_import
+      - entity: sensor.meter_<nmi>_latest_day_peak_grid_export
+  - type: statistics-graph
+    title: Daily grid energy (meter data)
+    period: day
+    days_to_show: 30
+    chart_type: bar
+    stat_types: [change]
+    entities:
+      - entity: openfeed:<nmi_key>_consumption
+        name: Import
+      - entity: openfeed:<nmi_key>_export
+        name: Export
+  - type: statistics-graph
+    title: Daily peak power (5-minute meter reads)
+    period: day
+    days_to_show: 30
+    chart_type: line
+    stat_types: [max]
+    entities:
+      - entity: openfeed:<nmi_key>_consumption_power
+        name: Peak import
+      - entity: openfeed:<nmi_key>_export_power
+        name: Peak export
+  - type: statistics-graph
+    title: Monthly billing
+    period: month
+    days_to_show: 365
+    chart_type: bar
+    stat_types: [change]
+    entities:
+      - entity: openfeed:<acct_key>_charges
+        name: Charges
+      - entity: openfeed:<acct_key>_credits
+        name: Credits
+      - entity: openfeed:<acct_key>_invoiced
+        name: Invoiced
+  - type: calendar
+    title: Bills
+    initial_view: listWeek
+    entities:
+      - calendar.<account>_bills
+  - type: entities
+    title: Solar and battery register
+    entities:
+      - entity: sensor.meter_<nmi>_der_solar_capacity
+      - entity: sensor.meter_<nmi>_der_approved_capacity
+      - entity: sensor.meter_<nmi>_der_export_limit
+      - entity: sensor.meter_<nmi>_der_register_issues
+      - entity: sensor.meter_<nmi>_usage_history

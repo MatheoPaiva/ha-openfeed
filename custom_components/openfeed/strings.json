@@ -127,6 +127,32 @@
       },
       "month_to_date_credits": {
         "name": "Month-to-date credits"
+      },
+      "last_statement_charges": {
+        "name": "Last statement charges"
+      },
+      "last_statement_credits": {
+        "name": "Last statement credits"
+      },
+      "month_to_date_import": {
+        "name": "Month-to-date grid import"
+      },
+      "month_to_date_export": {
+        "name": "Month-to-date grid export"
+      },
+      "last_30_days_import": {
+        "name": "Last 30 days grid import"
+      },
+      "last_30_days_export": {
+        "name": "Last 30 days grid export"
+      },
+      "usage_history_days": {
+        "name": "Usage history"
+      }
+    },
+    "calendar": {
+      "bills": {
+        "name": "Bills"
       }
     }
   }
