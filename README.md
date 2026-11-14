@@ -33,11 +33,17 @@ data and asks you to reconnect.
 | Data | Entity or statistic | Freshness |
 |---|---|---|
 | Grid consumption, export, controlled load | External statistics `openfeed:nmi_<nmi>_consumption`, `_export`, `_controlled_load` (hourly, kWh) | Batch; openfeed refreshes every 6 hours, meter data usually lags a day |
-| Latest full day per series | `sensor.meter_<nmi>_latest_day_*` | As above |
+| Grid import and export power | External statistics `openfeed:nmi_<nmi>_consumption_power`, `_export_power` (hourly mean, min and max, kW, from the meter's 5 or 30 minute reads) | As above |
+| Latest full day per series | `sensor.meter_<nmi>_latest_day_grid_*` | As above |
+| Latest full day peak import and export | `sensor.meter_<nmi>_latest_day_peak_grid_import`, `_export` (kW, with the interval start) | As above |
 | Account balance | `sensor.energy_<account>_account_balance` | Live, cached up to 15 minutes |
 | Latest invoice amount, due date, status | `sensor.energy_<account>_latest_invoice_*` | Hourly poll |
-| Plan name | `sensor.energy_<account>_plan` | Hourly poll |
+| Plan name and tariff detail | `sensor.energy_<account>_plan` (only when the retailer shares a plan) | Daily |
+| Month-to-date charges | `sensor.energy_<account>_month_to_date_charges` (only when the retailer shares billing transactions) | Every 6 hours |
+| Billing and invoice history | External statistics `openfeed:acct_<hash>_charges`, `_payments`, `_invoiced` (AUD) | Every 6 hours |
 | DER approved capacity and export limit | `sensor.meter_<nmi>_der_*` (when the retailer publishes DER data) | Hourly poll |
+| DER equipment and solar capacity | `sensor.meter_<nmi>_der_solar_capacity`, with every inverter and device as attributes | Hourly poll |
+| DER register issues | `sensor.meter_<nmi>_der_register_issues` | Hourly poll |
 | Substituted intervals | `sensor.meter_<nmi>_substituted_intervals` | With usage |
 | Bank current and available balance (optional) | `sensor.bank_<account>_*_balance` | Live, cached up to 15 minutes |
 
@@ -48,20 +54,49 @@ the integration options, up to 365). After that the last 7 days are re-imported 
 
 Basic (accumulation) meter reads are not imported to statistics; only interval reads are.
 
+### How much history
+
+openfeed imports some history when you first connect a retailer, then adds new data
+every 6 hours. The `usage_last_fetched` sensor shows the oldest and latest usage dates
+openfeed returned, and diagnostics show the oldest invoice and billing transaction.
+Home Assistant keeps long-term statistics permanently, so history builds up from the
+day you connect even if openfeed only holds a rolling window.
+
+Home Assistant long-term statistics are hourly. The energy statistics are hourly sums;
+the power statistics keep the hourly maximum of the meter's own interval reads, so a
+5-minute peak is not lost.
+
+### DER register
+
+The DER data comes from AEMO's DER Register via your retailer. Your network (DNSP)
+maintains it from the connection applications your installer lodges, so it can drift
+from what is on site. The DER register issues sensor flags:
+
+| Issue | Meaning |
+|---|---|
+| `decommissioned_records_listed` | Removed equipment is still on the record |
+| `battery_inverter_without_storage_device` | A battery inverter is listed with no storage device |
+| `solar_panels_on_battery_inverter` | Solar panels are attached to a battery inverter |
+| `active_inverters_exceed_approved_capacity` | Active inverter capacity is above the approved capacity |
+| `no_active_equipment` | Nothing on the record is active |
+
+To correct the record, ask your installer to lodge an alteration with your network, or
+contact the network directly. Your retailer cannot edit it.
+
 ## Scopes
 
 | Scope | Why |
 |---|---|
 | `openid` | Identifies your openfeed user so one Home Assistant entry maps to one person |
 | `offline_access` | Refresh tokens, so Home Assistant stays connected without signing in again |
-| `openfeed-au:data:energy:read` | Accounts, balances, invoices, meters, usage and DER |
+| `openfeed-au:data:energy:read` | Accounts, plans, balances, billing, invoices, meters, usage and DER |
 | `openfeed-au:data:banking:read` | Only when you tick "Also share banking data" |
 
-Transactions, payment schedules and personal details are not requested.
+Bank transactions, payment schedules and personal details are not requested.
 
 ## Setup
 
-1. Install the integration (see below) and restart Home Assistant.
+1. Install the integration (see below). Marketplace installs need no restart.
 2. Go to **Settings > Devices & services > Add integration > openfeed Consumer Data Right**.
 3. The first screen shows a public JSON Web Key Set (JWKS). Home Assistant generated the
    keys; the private keys never leave Home Assistant.
@@ -98,7 +133,10 @@ The integration follows openfeed's FAPI 2.0 profile:
   access token, with server nonces honoured.
 - RFC 9207 `iss` check on the sign-in redirect, and id_token signature, audience and
   nonce verification.
-- Diagnostics redact tokens, keys, account numbers, NMIs and meter IDs.
+- Diagnostics redact tokens, keys, account numbers, names, NMIs, meter IDs and
+  equipment identifiers.
+
+See [PRIVACY.md](PRIVACY.md) for what the integration collects and where it goes.
 
 ## Install
 

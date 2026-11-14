@@ -79,3 +79,35 @@ def test_cumulative_from_base():
     h = {datetime(2026, 1, 1, 1, tzinfo=UTC): 1.0, datetime(2026, 1, 1, 0, tzinfo=UTC): 2.0}
     rows = cumulative(h, 10.0)
     assert [r[2] for r in rows] == [12.0, 13.0]
+
+
+def test_five_minute_peaks_and_hourly_power() -> None:
+    from datetime import UTC, date, datetime
+
+    from custom_components.openfeed.usage import CONSUMPTION, EXPORT, summarise
+
+    reads = [0.0] * 288
+    reads[0] = 0.5  # 00:00-00:05 AEST, 6 kW
+    reads[1] = 0.25  # 3 kW
+    export = [0.0] * 288
+    export[144] = -1.0  # 12:00 AEST, 12 kW export
+    record = {"intervalDate": "2026-11-13", "reads": [
+        {"registerSuffix": "E1", "readStartDate": "2026-11-13", "readUType": "intervalRead",
+         "intervalRead": {"readIntervalLength": 5, "intervalReads": reads}},
+        {"registerSuffix": "E2", "readStartDate": "2026-11-13", "readUType": "intervalRead",
+         "intervalRead": {"readIntervalLength": 5, "intervalReads": [0.1] + [0.0] * 287}},
+        {"registerSuffix": "B1", "readStartDate": "2026-11-13", "readUType": "intervalRead",
+         "intervalRead": {"readIntervalLength": 5, "intervalReads": [abs(x) for x in export]}},
+    ]}
+    s = summarise([record])
+    day = date(2026, 11, 13)
+    # E1 + E2 in the first interval: 0.6 kWh over 5 minutes is 7.2 kW.
+    assert s.daily_peak[CONSUMPTION][day][0] == 7.2
+    assert s.daily_peak[CONSUMPTION][day][1] == datetime(2026, 11, 12, 14, 0, tzinfo=UTC)
+    assert s.daily_peak[EXPORT][day][0] == 12.0
+    mean, low, high = s.hourly_power[CONSUMPTION][datetime(2026, 11, 12, 14, tzinfo=UTC)]
+    assert round(high, 3) == 7.2
+    assert low == 0.0
+    # (7.2 + 3) kW over twelve 5-minute slots.
+    assert round(mean, 3) == round(10.2 / 12, 3)
+    assert s.oldest_day == day

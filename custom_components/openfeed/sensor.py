@@ -13,8 +13,14 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import EntityCategory, UnitOfApparentPower, UnitOfEnergy
+from homeassistant.const import (
+    EntityCategory,
+    UnitOfApparentPower,
+    UnitOfEnergy,
+    UnitOfPower,
+)
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -26,8 +32,10 @@ from .coordinator import (
     MeterData,
     OpenfeedConfigEntry,
     OpenfeedCoordinator,
+    latest_day_peak,
     latest_day_total,
 )
+from .statistics import account_key
 from .usage import CONSUMPTION, CONTROLLED_LOAD, EXPORT
 
 
@@ -53,11 +61,24 @@ class AccountSensorDescription(SensorEntityDescription):
     value_fn: Callable[[EnergyAccountData], Any]
     attrs_fn: Callable[[EnergyAccountData], dict[str, Any]] = lambda _a: {}
     available_fn: Callable[[EnergyAccountData], bool] = lambda _a: True
+    # Only create the entity when this returns True at setup.
+    exists_fn: Callable[[EnergyAccountData], bool] = lambda _a: True
 
 
 def _plan(a: EnergyAccountData) -> dict[str, Any]:
-    plans = a.account.get("plans") or []
-    return (plans[0].get("planOverview") or {}) if plans else {}
+    return (a.plan or {}).get("planOverview") or {}
+
+
+def _billing_attrs(a: EnergyAccountData) -> dict[str, Any]:
+    b = a.billing
+    key = account_key(a.account["accountId"])
+    return {
+        "by_type": b.by_type if b else None,
+        "transactions": b.transactions if b else None,
+        "oldest_transaction": b.oldest_transaction.isoformat() if b and b.oldest_transaction else None,
+        "statistic_prefix": f"{DOMAIN}:{key}_",
+        "freshness": "batch, refreshed by openfeed every 6 hours",
+    }
 
 
 def _invoice(a: EnergyAccountData, key: str) -> Any:
@@ -86,6 +107,12 @@ ACCOUNT_SENSORS: tuple[AccountSensorDescription, ...] = (
             "payment_status": _invoice(a, "paymentStatus"),
             "gst_amount": _invoice(a, "gstAmount"),
             "balance_at_issue": _invoice(a, "balanceAtIssue"),
+            "invoices_shared": a.invoice_count,
+            "oldest_invoice": (
+                a.billing.oldest_invoice.isoformat()
+                if a.billing and a.billing.oldest_invoice
+                else None
+            ),
         },
         available_fn=lambda a: a.latest_invoice is not None,
     ),
@@ -109,8 +136,20 @@ ACCOUNT_SENSORS: tuple[AccountSensorDescription, ...] = (
         attrs_fn=lambda a: {
             "start_date": _plan(a).get("startDate"),
             "end_date": _plan(a).get("endDate"),
-            "plan_detail": (a.account.get("plans") or [{}])[0].get("planDetail"),
+            "plan_detail": (a.plan or {}).get("planDetail"),
         },
+        available_fn=lambda a: a.plan is not None,
+        exists_fn=lambda a: a.plan is not None,
+    ),
+    AccountSensorDescription(
+        key="month_to_date_charges",
+        translation_key="month_to_date_charges",
+        device_class=SensorDeviceClass.MONETARY,
+        suggested_display_precision=2,
+        value_fn=lambda a: a.billing.month_to_date_charges if a.billing else None,
+        attrs_fn=_billing_attrs,
+        available_fn=lambda a: a.billing is not None and a.billing.transactions > 0,
+        exists_fn=lambda a: a.billing is not None and a.billing.transactions > 0,
     ),
 )
 
@@ -122,6 +161,47 @@ ACCOUNT_SENSORS: tuple[AccountSensorDescription, ...] = (
 class MeterSensorDescription(SensorEntityDescription):
     value_fn: Callable[[MeterData], Any]
     attrs_fn: Callable[[MeterData], dict[str, Any]] = lambda _m: {}
+    exists_fn: Callable[[MeterData], bool] = lambda _m: True
+
+
+def _peak_sensor(series: str, key: str) -> MeterSensorDescription:
+    def value(m: MeterData) -> float | None:
+        peak = latest_day_peak(m.usage, series)
+        return peak[1] if peak else None
+
+    def attrs(m: MeterData) -> dict[str, Any]:
+        peak = latest_day_peak(m.usage, series)
+        return {
+            "date": peak[0].isoformat() if peak else None,
+            "interval_start": peak[2].isoformat() if peak else None,
+            "interval_minutes": m.usage.interval_minutes if m.usage else None,
+            "long_term_statistic": f"{DOMAIN}:{m.key}_{series}_power",
+        }
+
+    return MeterSensorDescription(
+        key=key,
+        translation_key=key,
+        device_class=SensorDeviceClass.POWER,
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        suggested_display_precision=2,
+        value_fn=value,
+        attrs_fn=attrs,
+        exists_fn=lambda m: bool(m.usage and m.usage.daily_peak.get(series)),
+    )
+
+
+def _der_summary_attrs(m: MeterData) -> dict[str, Any]:
+    d = m.der_summary
+    if d is None:
+        return {}
+    return {
+        "active_inverter_kw": d.active_inverter_kw,
+        "active_inverters": d.active_inverters,
+        "storage_kwh": d.active_storage_kwh,
+        "approved_capacity_kva": d.approved_capacity,
+        "inverters": d.inverters,
+        "source": "AEMO DER Register via the retailer",
+    }
 
 
 def _day_sensor(series: str) -> MeterSensorDescription:
@@ -178,6 +258,29 @@ METER_SENSORS: tuple[MeterSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda m: _num(((m.der or {}).get("protectionMode") or {}).get("exportLimitKva")),
     ),
+    _peak_sensor(CONSUMPTION, "latest_day_peak_import"),
+    _peak_sensor(EXPORT, "latest_day_peak_export"),
+    MeterSensorDescription(
+        key="der_solar_capacity",
+        translation_key="der_solar_capacity",
+        device_class=SensorDeviceClass.POWER,
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda m: m.der_summary.active_pv_kw if m.der_summary else None,
+        attrs_fn=_der_summary_attrs,
+        exists_fn=lambda m: m.der_summary is not None,
+    ),
+    MeterSensorDescription(
+        key="der_register_issues",
+        translation_key="der_register_issues",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda m: len(m.der_summary.issues) if m.der_summary else None,
+        attrs_fn=lambda m: {
+            "issues": m.der_summary.issues if m.der_summary else [],
+            "how_to_fix": "Ask your network (or installer) to lodge a correction to the DER Register",
+        },
+        exists_fn=lambda m: m.der_summary is not None,
+    ),
     MeterSensorDescription(
         key="substituted_intervals",
         translation_key="substituted_intervals",
@@ -191,8 +294,21 @@ METER_SENSORS: tuple[MeterSensorDescription, ...] = (
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda m: m.usage_fetched_at,
+        attrs_fn=lambda m: {
+            "oldest_usage_date": (
+                m.usage.oldest_day.isoformat() if m.usage and m.usage.oldest_day else None
+            ),
+            "latest_usage_date": (
+                m.usage.latest_complete_day.isoformat()
+                if m.usage and m.usage.latest_complete_day
+                else None
+            ),
+        },
     ),
 )
+
+
+DAY_KEYS = {f"latest_day_{s}" for s in (CONSUMPTION, EXPORT, CONTROLLED_LOAD)}
 
 
 async def async_setup_entry(
@@ -204,14 +320,20 @@ async def async_setup_entry(
     coordinator = entry.runtime_data
     data = coordinator.data
     entities: list[SensorEntity] = []
+    registry = er.async_get(hass)
+    stale: list[str] = []
     for account_id, account in data.energy.items():
-        entities.extend(
-            EnergyAccountSensor(coordinator, account_id, d) for d in ACCOUNT_SENSORS
-        )
+        for d in ACCOUNT_SENSORS:
+            if d.exists_fn(account):
+                entities.append(EnergyAccountSensor(coordinator, account_id, d))
+            else:
+                stale.append(f"{entry.unique_id}_{account_id}_{d.key}")
         for meter_id, meter in account.meters.items():
             series_seen = set(meter.usage.daily) if meter.usage else set()
             for d in METER_SENSORS:
-                if d.key.startswith("latest_day_") and d.key[11:] not in series_seen:
+                if not d.exists_fn(meter):
+                    continue
+                if d.key in DAY_KEYS and d.key[11:] not in series_seen:
                     if d.key != f"latest_day_{CONSUMPTION}":
                         continue
                 if d.key.startswith("der_") and meter.der is None:
@@ -220,6 +342,11 @@ async def async_setup_entry(
     for account_id in data.banking:
         entities.append(BankingBalanceSensor(coordinator, account_id, "current"))
         entities.append(BankingBalanceSensor(coordinator, account_id, "available"))
+    # Remove entities from earlier versions that this account cannot supply,
+    # such as a plan sensor for a retailer that shares no plan.
+    for unique_id in stale:
+        if entity_id := registry.async_get_entity_id("sensor", DOMAIN, unique_id):
+            registry.async_remove(entity_id)
     async_add_entities(entities)
 
 

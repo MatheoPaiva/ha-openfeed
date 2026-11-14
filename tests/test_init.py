@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from homeassistant.components.recorder.statistics import get_last_statistics
+from homeassistant.components.recorder.statistics import get_last_statistics, list_statistic_ids
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
@@ -64,6 +64,20 @@ def _usage_records():
     return out
 
 
+DER = {
+    "approvedCapacity": 10,
+    "protectionMode": {"exportLimitKva": 5},
+    "acConnections": [
+        {"connectionIdentifier": 1, "count": 1, "manufacturerName": "Tesla",
+         "inverterSeries": "Tesla Powerwall", "inverterDeviceCapacity": 5, "status": "ACTIVE",
+         "derDevices": [{"deviceIdentifier": 2, "count": 10, "type": "SOLAR_PV",
+                         "nominalRatedCapacity": 0.4, "status": "ACTIVE"}]},
+        {"connectionIdentifier": 3, "count": 1, "manufacturerName": "Old Co",
+         "inverterDeviceCapacity": 3, "status": "DECOMMISSIONED", "derDevices": []},
+    ],
+}
+
+
 def _mock_api(aioclient_mock, revoked: bool = False):
     a = f"{API}/v1/energy/accounts/{ACC}"
     if revoked:
@@ -75,9 +89,18 @@ def _mock_api(aioclient_mock, revoked: bool = False):
     aioclient_mock.get(f"{a}/meters", json={"data": [{"meterId": METER, "nationalMeteringId": NMI}]})
     aioclient_mock.get(f"{a}/invoices", json={"data": [
         {"invoiceNumber": "1", "issueDate": "2026-09-01", "dueDate": "2026-09-15", "invoiceAmount": "100.00", "paymentStatus": "PAID"},
-        {"invoiceNumber": "2", "issueDate": "2026-10-01", "dueDate": "2026-10-15", "invoiceAmount": "88.10", "paymentStatus": "NOT_PAID"},
+        {"invoiceNumber": "2", "issueDate": "2026-10-01", "dueDate": "2026-10-15", "invoiceAmount": "88.10", "paymentStatus": "NOT_PAID",
+         "meterIds": [METER]},
     ]})
-    aioclient_mock.get(f"{a}/meters/{METER}/der", status=404, json={})
+    aioclient_mock.get(a, json={"data": {"accountId": ACC, "plans": [
+        {"planOverview": {"displayName": "Wholesale", "startDate": "2026-01-01"}}]}})
+    aioclient_mock.get(f"{a}/billing", json={"data": [
+        {"accountId": ACC, "executionDateTime": f"{dt_util.now(AEST).date().replace(day=1).isoformat()}T09:00:00+10:00",
+         "transactionUType": "usage", "amount": 12.5, "description": "Usage"},
+        {"accountId": ACC, "executionDateTime": "2026-09-03T09:00:00+10:00",
+         "transactionUType": "payment", "amount": -100.0},
+    ]})
+    aioclient_mock.get(f"{a}/meters/{METER}/der", json={"data": DER})
     aioclient_mock.get(f"{a}/meters/{METER}/usage", json={"data": _usage_records()})
     aioclient_mock.get(f"{API}/v1/banking/accounts", json={"data": [{"accountId": "B1=", "displayName": "Everyday"}]})
     aioclient_mock.get(f"{API}/v1/banking/accounts/B1=/balance", status=403,
@@ -94,10 +117,18 @@ async def test_setup_creates_sensors_and_statistics(hass, entry, aioclient_mock)
     balance = next(s for e, s in states.items() if "balance" in e and s.attributes.get("unit_of_measurement") == "AUD"
                    and s.state not in ("unknown", "unavailable"))
     assert float(balance.state) == -123.45
-    consumption = next(s for e, s in states.items() if "consumption" in e)
-    assert float(consumption.state) == 24.0
-    export = next(s for e, s in states.items() if "export" in e and "limit" not in e)
-    assert float(export.state) == 12.0
+    meter = f"sensor.meter_{NMI.lower()}"
+    assert float(states[f"{meter}_latest_day_grid_consumption"].state) == 24.0
+    assert float(states[f"{meter}_latest_day_grid_export"].state) == 12.0
+    # 0.5 kWh per 30 minutes is 1 kW; 0.25 kWh is 0.5 kW.
+    assert float(states[f"{meter}_latest_day_peak_grid_import"].state) == 1.0
+    assert float(states[f"{meter}_latest_day_peak_grid_export"].state) == 0.5
+    assert float(states[f"{meter}_der_solar_capacity"].state) == 4.0
+    issues = states[f"{meter}_der_register_issues"]
+    assert int(issues.state) == 3
+    assert "decommissioned_records_listed" in issues.attributes["issues"]
+    assert states["sensor.energy_home_plan"].state == "Wholesale"
+    assert float(states["sensor.energy_home_month_to_date_charges"].state) == 12.5
     invoice = next(s for e, s in states.items() if "invoice_amount" in e)
     assert float(invoice.state) == 88.10
     assert states["sensor.energy_home_latest_invoice_status"].state == "NOT_PAID"
@@ -107,6 +138,14 @@ async def test_setup_creates_sensors_and_statistics(hass, entry, aioclient_mock)
     stat_id = f"openfeed:nmi_{NMI.lower()}_consumption"
     last = await hass.async_add_executor_job(get_last_statistics, hass, 1, stat_id, True, {"sum"})
     assert last[stat_id][0]["sum"] == pytest.approx(48.0)
+    power_id = f"openfeed:nmi_{NMI.lower()}_consumption_power"
+    last = await hass.async_add_executor_job(get_last_statistics, hass, 1, power_id, True, {"max", "mean"})
+    assert last[power_id][0]["max"] == pytest.approx(1.0)
+    stats = await hass.async_add_executor_job(list_statistic_ids, hass)
+    ids = {s["statistic_id"] for s in stats}
+    assert any(i.endswith("_charges") for i in ids)
+    assert any(i.endswith("_invoiced") for i in ids)
+    assert any(i.endswith("_payments") for i in ids)
 
     # Every API call carried a DPoP-bound token.
     for method, url, data, headers in aioclient_mock.mock_calls:
@@ -141,5 +180,27 @@ async def test_diagnostics_redacts(hass, entry, aioclient_mock) -> None:
     await hass.async_block_till_done()
     diag = await async_get_config_entry_diagnostics(hass, entry)
     text = str(diag)
-    for secret in ("BEGIN PRIVATE KEY", "'rt'", NMI, ACC, METER, "user-1"):
+    for secret in ("BEGIN PRIVATE KEY", "'rt'", NMI, ACC, METER, "user-1", "Home"):
         assert secret not in text
+
+
+async def test_plan_sensor_removed_when_no_plan(hass, entry, aioclient_mock) -> None:
+    from homeassistant.helpers import entity_registry as er
+
+    registry = er.async_get(hass)
+    old = registry.async_get_or_create(
+        "sensor", DOMAIN, f"{entry.unique_id}_{ACC}_plan", config_entry=entry
+    )
+    _mock_api_no_plan(aioclient_mock)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert registry.async_get(old.entity_id) is None
+    assert hass.states.get("sensor.energy_home_month_to_date_charges") is not None
+
+
+def _mock_api_no_plan(aioclient_mock):
+    _mock_api(aioclient_mock)
+    a = f"{API}/v1/energy/accounts/{ACC}"
+    # The first registered mock wins, so replace the detail mock.
+    aioclient_mock._mocks = [m for m in aioclient_mock._mocks if str(m.url) != a]
+    aioclient_mock.get(a, json={"data": {"accountId": ACC, "plans": None}})

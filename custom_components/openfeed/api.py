@@ -181,6 +181,9 @@ class OpenfeedClient:
     async def energy_invoices(self, account_id: str) -> list[dict[str, Any]]:
         return await self.get_collection(f"/v1/energy/accounts/{path_segment(account_id)}/invoices")
 
+    async def energy_billing(self, account_id: str) -> list[dict[str, Any]]:
+        return await self.get_collection(f"/v1/energy/accounts/{path_segment(account_id)}/billing")
+
     # Banking --------------------------------------------------------------
 
     async def banking_accounts(self) -> list[dict[str, Any]]:

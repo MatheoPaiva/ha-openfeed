@@ -68,20 +68,63 @@
   },
   "entity": {
     "sensor": {
-      "energy_balance": {"name": "Account balance"},
-      "latest_invoice_amount": {"name": "Latest invoice amount"},
-      "latest_invoice_due": {"name": "Latest invoice due"},
-      "latest_invoice_status": {"name": "Latest invoice status"},
-      "plan": {"name": "Plan"},
-      "latest_day_consumption": {"name": "Latest day grid consumption"},
-      "latest_day_export": {"name": "Latest day grid export"},
-      "latest_day_controlled_load": {"name": "Latest day controlled load"},
-      "der_approved_capacity": {"name": "DER approved capacity"},
-      "der_export_limit": {"name": "DER export limit"},
-      "substituted_intervals": {"name": "Substituted intervals"},
-      "usage_fetched": {"name": "Usage last fetched"},
-      "banking_current_balance": {"name": "Current balance"},
-      "banking_available_balance": {"name": "Available balance"}
+      "energy_balance": {
+        "name": "Account balance"
+      },
+      "latest_invoice_amount": {
+        "name": "Latest invoice amount"
+      },
+      "latest_invoice_due": {
+        "name": "Latest invoice due"
+      },
+      "latest_invoice_status": {
+        "name": "Latest invoice status"
+      },
+      "plan": {
+        "name": "Plan"
+      },
+      "latest_day_consumption": {
+        "name": "Latest day grid consumption"
+      },
+      "latest_day_export": {
+        "name": "Latest day grid export"
+      },
+      "latest_day_controlled_load": {
+        "name": "Latest day controlled load"
+      },
+      "der_approved_capacity": {
+        "name": "DER approved capacity"
+      },
+      "der_export_limit": {
+        "name": "DER export limit"
+      },
+      "substituted_intervals": {
+        "name": "Substituted intervals"
+      },
+      "usage_fetched": {
+        "name": "Usage last fetched"
+      },
+      "banking_current_balance": {
+        "name": "Current balance"
+      },
+      "banking_available_balance": {
+        "name": "Available balance"
+      },
+      "month_to_date_charges": {
+        "name": "Month-to-date charges"
+      },
+      "latest_day_peak_import": {
+        "name": "Latest day peak grid import"
+      },
+      "latest_day_peak_export": {
+        "name": "Latest day peak grid export"
+      },
+      "der_solar_capacity": {
+        "name": "DER solar capacity"
+      },
+      "der_register_issues": {
+        "name": "DER register issues"
+      }
     }
   }
 }

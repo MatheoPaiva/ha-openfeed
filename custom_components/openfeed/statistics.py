@@ -1,8 +1,12 @@
-"""Import openfeed interval usage into Home Assistant long-term statistics.
+"""Import openfeed data into Home Assistant long-term statistics.
 
 Each meter gets external statistics openfeed:<meter_key>_<series> in kWh,
 so retailer meter data can be added to the Energy dashboard as grid
-consumption and return to grid. Each refresh re-imports a trailing window,
+consumption and return to grid. Each meter also gets
+openfeed:<meter_key>_<series>_power in kW (hourly mean, min and max of the
+meter's interval reads), which keeps peak demand and peak export that the
+hourly energy sums hide. Each account gets money series
+openfeed:<account_key>_<charges|payments|invoiced>. Each refresh re-imports a trailing window,
 restarting the running sum from the last statistic before the window, so
 finalised substitute reads overwrite earlier values.
 """
@@ -24,10 +28,11 @@ from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
     statistics_during_period,
 )
-from homeassistant.const import UnitOfEnergy
+from homeassistant.const import UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
+from .billing import CHARGES, INVOICED, PAYMENTS
 from .usage import CONSUMPTION, CONTROLLED_LOAD, EXPORT, cumulative
 
 _LOGGER = logging.getLogger(__name__)
@@ -36,6 +41,18 @@ SERIES_NAMES = {
     CONSUMPTION: "grid consumption",
     EXPORT: "grid export",
     CONTROLLED_LOAD: "controlled load",
+}
+
+
+POWER_NAMES = {
+    CONSUMPTION: "grid import power",
+    EXPORT: "grid export power",
+}
+
+MONEY_NAMES = {
+    CHARGES: "billed charges",
+    PAYMENTS: "payments",
+    INVOICED: "invoiced",
 }
 
 
@@ -50,6 +67,11 @@ def meter_key(meter: dict) -> str:
         return f"nmi_{nmi}"
     digest = hashlib.sha256(str(meter.get("meterId")).encode()).hexdigest()[:12]
     return f"meter_{digest}"
+
+
+def account_key(account_id: str) -> str:
+    """A stable, statistic-safe key for a tokenised account ID."""
+    return f"acct_{hashlib.sha256(str(account_id).encode()).hexdigest()[:12]}"
 
 
 def statistic_id(key: str, series: str) -> str:
@@ -80,7 +102,62 @@ async def async_import_meter(
     label: str,
     hourly: dict[str, dict[datetime, float]],
 ) -> dict[str, int]:
-    """Import hourly series for one meter. Returns rows written per series."""
+    """Import hourly kWh series for one meter. Returns rows written per series."""
+    return await _import_sums(
+        hass, key, label, hourly, SERIES_NAMES, UnitOfEnergy.KILO_WATT_HOUR, "energy"
+    )
+
+
+async def async_import_money(
+    hass: HomeAssistant,
+    key: str,
+    label: str,
+    hourly: dict[str, dict[datetime, float]],
+    currency: str,
+) -> dict[str, int]:
+    """Import hourly money series for one account."""
+    return await _import_sums(hass, key, label, hourly, MONEY_NAMES, currency, None)
+
+
+async def async_import_power(
+    hass: HomeAssistant,
+    key: str,
+    label: str,
+    hourly_power: dict[str, dict[datetime, tuple[float, float, float]]],
+) -> dict[str, int]:
+    """Import hourly mean/min/max kW for one meter."""
+    written: dict[str, int] = {}
+    for series, values in hourly_power.items():
+        if not values or series == CONTROLLED_LOAD:
+            continue
+        stat_id = statistic_id(key, f"{series}_power")
+        rows = [
+            StatisticData(start=hour, mean=round(mean, 4), min=round(low, 4), max=round(high, 4))
+            for hour, (mean, low, high) in sorted(values.items())
+        ]
+        metadata = StatisticMetaData(
+            mean_type=StatisticMeanType.ARITHMETIC,
+            has_sum=False,
+            name=f"{label} {POWER_NAMES.get(series, series)}",
+            source=DOMAIN,
+            statistic_id=stat_id,
+            unit_class="power",
+            unit_of_measurement=UnitOfPower.KILO_WATT,
+        )
+        async_add_external_statistics(hass, metadata, rows)
+        written[series] = len(rows)
+    return written
+
+
+async def _import_sums(
+    hass: HomeAssistant,
+    key: str,
+    label: str,
+    hourly: dict[str, dict[datetime, float]],
+    names: dict[str, str],
+    unit: str,
+    unit_class: str | None,
+) -> dict[str, int]:
     written: dict[str, int] = {}
     for series, values in hourly.items():
         if not values:
@@ -95,11 +172,11 @@ async def async_import_meter(
         metadata = StatisticMetaData(
             mean_type=StatisticMeanType.NONE,
             has_sum=True,
-            name=f"{label} {SERIES_NAMES.get(series, series)}",
+            name=f"{label} {names.get(series, series)}",
             source=DOMAIN,
             statistic_id=stat_id,
-            unit_class="energy",
-            unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+            unit_class=unit_class,
+            unit_of_measurement=unit,
         )
         async_add_external_statistics(hass, metadata, rows)
         written[series] = len(rows)

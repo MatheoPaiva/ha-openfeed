@@ -27,6 +27,12 @@ TO_REDACT = {
     "grant_id",
     "client_id",
     "app_id",
+    # Nested identifiers and free text that can identify a person or site.
+    "meterIds",
+    "connectionIdentifier",
+    "deviceIdentifier",
+    "displayName",
+    "description",
 }
 
 
@@ -45,11 +51,14 @@ async def async_get_config_entry_diagnostics(
                 {
                     "meter": meter.meter,
                     "der": meter.der,
+                    "der_issues": meter.der_summary.issues if meter.der_summary else None,
                     "usage": None
                     if usage is None
                     else {
                         "series": {s: len(v) for s, v in usage.hourly.items()},
+                        "oldest_day": str(usage.oldest_day),
                         "latest_day": str(usage.latest_complete_day),
+                        "power_series": {s: len(v) for s, v in usage.hourly_power.items()},
                         "substituted_intervals": usage.substituted_intervals,
                         "skipped_reads": usage.skipped_reads,
                         "interval_minutes": usage.interval_minutes,
@@ -61,6 +70,15 @@ async def async_get_config_entry_diagnostics(
             "account": account.account,
             "balance_status": account.balance_status,
             "latest_invoice": account.latest_invoice,
+            "plan_shared": account.plan is not None,
+            "history": {
+                "invoices": account.invoice_count,
+                "oldest_invoice": str(b.oldest_invoice) if (b := account.billing) else None,
+                "billing_status": account.billing_status,
+                "billing_transactions": b.transactions if b else None,
+                "oldest_transaction": str(b.oldest_transaction) if b else None,
+                "money_series": {s: len(v) for s, v in b.hourly.items()} if b else None,
+            },
             "meters": meters,
         }
     return async_redact_data(

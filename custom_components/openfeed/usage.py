@@ -39,9 +39,21 @@ class UsageSummary:
     hourly: dict[str, dict[datetime, float]] = field(default_factory=dict)
     # series -> AEST date -> kWh
     daily: dict[str, dict[date, float]] = field(default_factory=dict)
+    # series -> UTC hour start -> (mean kW, min kW, max kW) across intervals
+    hourly_power: dict[str, dict[datetime, tuple[float, float, float]]] = field(
+        default_factory=dict
+    )
+    # series -> AEST date -> (peak kW, UTC start of the peak interval)
+    daily_peak: dict[str, dict[date, tuple[float, datetime]]] = field(default_factory=dict)
     substituted_intervals: int = 0
     skipped_reads: int = 0
     interval_minutes: int | None = None
+
+    @property
+    def oldest_day(self) -> date | None:
+        """The earliest AEST date with data in any series."""
+        days = [d for s in self.daily.values() for d in s]
+        return min(days) if days else None
 
     @property
     def latest_complete_day(self) -> date | None:
@@ -113,14 +125,55 @@ def summarise(records: list[dict[str, Any]]) -> UsageSummary:
 
     hourly: dict[str, dict[datetime, float]] = defaultdict(lambda: defaultdict(float))
     daily: dict[str, dict[date, float]] = defaultdict(lambda: defaultdict(float))
+    # Site total per series and interval, summing registers (E1 + E2 and so on).
+    per_interval: dict[str, dict[datetime, float]] = defaultdict(lambda: defaultdict(float))
     for (_register, start), (series, kwh) in intervals.items():
         hour = start.replace(minute=0, second=0, microsecond=0)
         hourly[series][hour] += kwh
         daily[series][start.astimezone(AEST).date()] += kwh
+        per_interval[series][start] += kwh
 
     summary.hourly = {s: dict(sorted(v.items())) for s, v in hourly.items()}
     summary.daily = {s: dict(sorted(v.items())) for s, v in daily.items()}
+    if summary.interval_minutes:
+        summary.hourly_power, summary.daily_peak = _power(
+            per_interval, summary.interval_minutes
+        )
     return summary
+
+
+def _power(
+    per_interval: dict[str, dict[datetime, float]], minutes: int
+) -> tuple[
+    dict[str, dict[datetime, tuple[float, float, float]]],
+    dict[str, dict[date, tuple[float, datetime]]],
+]:
+    """Average power per interval, rolled up to hourly mean/min/max and daily peaks.
+
+    Intervals with no reading count as zero power, so an hour with one
+    5-minute import spike still averages over the full hour.
+    """
+    per_hour = 60 // minutes if minutes and 60 % minutes == 0 else 1
+    scale = 60 / minutes
+    hourly: dict[str, dict[datetime, tuple[float, float, float]]] = {}
+    peaks: dict[str, dict[date, tuple[float, datetime]]] = {}
+    for series, values in per_interval.items():
+        buckets: dict[datetime, list[float]] = defaultdict(list)
+        day_peak: dict[date, tuple[float, datetime]] = {}
+        for start, kwh in values.items():
+            kw = kwh * scale
+            buckets[start.replace(minute=0, second=0, microsecond=0)].append(kw)
+            day = start.astimezone(AEST).date()
+            if day not in day_peak or kw > day_peak[day][0]:
+                day_peak[day] = (kw, start)
+        rows = {}
+        for hour, kws in sorted(buckets.items()):
+            zeros = max(0, per_hour - len(kws))
+            low = 0.0 if zeros else min(kws)
+            rows[hour] = (sum(kws) / max(per_hour, len(kws)), low, max(kws))
+        hourly[series] = rows
+        peaks[series] = {d: (round(kw, 3), t) for d, (kw, t) in sorted(day_peak.items())}
+    return hourly, peaks
 
 
 def usage_windows(oldest: date, newest: date, window_days: int) -> list[tuple[date, date]]:

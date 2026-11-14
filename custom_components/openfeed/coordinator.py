@@ -23,7 +23,10 @@ from .api import (
     TokenRejectedError,
     cancel_on_revocation,
 )
+from .billing import BillingSummary, summarise_billing
 from .const import (
+    ACCOUNT_DETAIL_REFRESH_HOURS,
+    BILLING_REFRESH_HOURS,
     CONF_BACKFILL_DAYS,
     CONF_SCOPES,
     DEFAULT_BACKFILL_DAYS,
@@ -37,7 +40,14 @@ from .const import (
 )
 from .oauth import OpenfeedAuthError
 from .session import OpenfeedSession
-from .statistics import async_import_meter, meter_key
+from .der import DerSummary, summarise_der
+from .statistics import (
+    account_key,
+    async_import_meter,
+    async_import_money,
+    async_import_power,
+    meter_key,
+)
 from .usage import AEST, UsageSummary, summarise, usage_windows
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,6 +63,7 @@ class MeterData:
     meter: dict[str, Any]
     key: str
     der: dict[str, Any] | None = None
+    der_summary: DerSummary | None = None
     usage: UsageSummary | None = None
     usage_fetched_at: datetime | None = None
 
@@ -65,7 +76,16 @@ class EnergyAccountData:
     balance: dict[str, Any] | None = None
     balance_status: str = "ok"
     latest_invoice: dict[str, Any] | None = None
+    invoice_count: int = 0
+    billing: BillingSummary | None = None
+    billing_status: str = "not_fetched"
+    billing_fetched_at: datetime | None = None
     meters: dict[str, MeterData] = field(default_factory=dict)
+
+    @property
+    def plan(self) -> dict[str, Any] | None:
+        plans = self.account.get("plans") or []
+        return plans[0] if plans else None
 
 
 @dataclass(slots=True)
@@ -112,6 +132,10 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
         self.session = session
         self._usage_cache: dict[str, MeterData] = {}
         self._backfilled: set[str] = set()
+        # account ID -> (fetched at, plans list or None)
+        self._plan_cache: dict[str, tuple[datetime, list[dict[str, Any]] | None]] = {}
+        # account ID -> (fetched at, status, summary)
+        self._billing_cache: dict[str, tuple[datetime, str, BillingSummary | None]] = {}
 
     @property
     def scopes(self) -> list[str]:
@@ -128,6 +152,8 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
             # Revocation is a hard stop: purge cached data and the grant,
             # then ask the user to reconnect.
             self._usage_cache.clear()
+            self._plan_cache.clear()
+            self._billing_cache.clear()
             self.session.clear_grant()
             raise ConfigEntryAuthFailed(
                 "The openfeed disclosure grant was revoked or has ended"
@@ -167,6 +193,7 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
     async def _collect_energy_account(self, account: dict[str, Any]) -> EnergyAccountData:
         client = self.session.client
         account_id = account["accountId"]
+        account = await self._with_plans(account)
         item = EnergyAccountData(account=account)
         balance, meters, invoices = await cancel_on_revocation(
             [
@@ -178,17 +205,67 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
         _apply_balance(item, balance)
         if isinstance(invoices, list):
             item.latest_invoice = _latest_invoice(invoices)
+            item.invoice_count = len(invoices)
         if isinstance(meters, OpenfeedApiError):
             raise meters
+        await self._apply_billing(item, invoices if isinstance(invoices, list) else [])
         for meter in meters:
             item.meters[meter["meterId"]] = await self._collect_meter(account_id, meter)
         return item
+
+    async def _with_plans(self, account: dict[str, Any]) -> dict[str, Any]:
+        """Fill plans from the account detail endpoint when the list omits them."""
+        if account.get("plans"):
+            return account
+        account_id = account["accountId"]
+        now = dt_util.utcnow()
+        cached = self._plan_cache.get(account_id)
+        if cached is None or now - cached[0] >= timedelta(hours=ACCOUNT_DETAIL_REFRESH_HOURS):
+            (detail,) = await cancel_on_revocation(
+                [self.session.client.energy_account(account_id)]
+            )
+            plans = None
+            if isinstance(detail, dict):
+                plans = detail.get("plans") or None
+            cached = (now, plans)
+            self._plan_cache[account_id] = cached
+        return {**account, "plans": cached[1]} if cached[1] else account
+
+    async def _apply_billing(
+        self, item: EnergyAccountData, invoices: list[dict[str, Any]]
+    ) -> None:
+        """Refresh billing transactions and money statistics every few hours."""
+        account_id = item.account["accountId"]
+        now = dt_util.utcnow()
+        cached = self._billing_cache.get(account_id)
+        if cached and now - cached[0] < timedelta(hours=BILLING_REFRESH_HOURS):
+            item.billing_fetched_at, item.billing_status, item.billing = cached
+            return
+        (transactions,) = await cancel_on_revocation(
+            [self.session.client.energy_billing(account_id)]
+        )
+        status = "ok"
+        if isinstance(transactions, OpenfeedApiError):
+            status = "unavailable"
+            transactions = []
+        summary = summarise_billing(transactions, invoices, dt_util.now(AEST).date())
+        if status == "ok" and not summary.transactions:
+            status = "empty"
+        if summary.hourly:
+            currency = (item.balance or {}).get("currency") or "AUD"
+            label = f"openfeed {item.account.get('providerName') or 'energy'} account"
+            await async_import_money(
+                self.hass, account_key(account_id), label, summary.hourly, currency
+            )
+        self._billing_cache[account_id] = (now, status, summary)
+        item.billing_fetched_at, item.billing_status, item.billing = now, status, summary
 
     async def _collect_meter(self, account_id: str, meter: dict[str, Any]) -> MeterData:
         meter_id = meter["meterId"]
         cached = self._usage_cache.get(meter_id)
         md = MeterData(account_id=account_id, meter=meter, key=meter_key(meter))
         md.der = await self.session.client.energy_der(account_id, meter_id)
+        md.der_summary = summarise_der(md.der)
         now = dt_util.utcnow()
         if cached and cached.usage_fetched_at and now - cached.usage_fetched_at < timedelta(
             hours=USAGE_REFRESH_HOURS
@@ -219,6 +296,9 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
         if summary.hourly:
             label = f"openfeed {md.meter.get('nationalMeteringId') or md.key}"
             await async_import_meter(self.hass, md.key, label, summary.hourly)
+        if summary.hourly_power:
+            label = f"openfeed {md.meter.get('nationalMeteringId') or md.key}"
+            await async_import_power(self.hass, md.key, label, summary.hourly_power)
         self._backfilled.add(md.meter["meterId"])
         return summary
 
@@ -230,6 +310,21 @@ def _apply_balance(item: EnergyAccountData | BankingAccountData, result: Any) ->
         item.balance_status = "error"
     else:
         item.balance = result
+
+
+def latest_day_peak(
+    usage: UsageSummary | None, series: str, today: date | None = None
+) -> tuple[date, float, datetime] | None:
+    """Peak interval power (kW) on the most recent full AEST day."""
+    if usage is None or not usage.daily_peak.get(series):
+        return None
+    today = today or dt_util.now(AEST).date()
+    days = [d for d in usage.daily_peak[series] if d < today]
+    if not days:
+        return None
+    day = max(days)
+    kw, start = usage.daily_peak[series][day]
+    return day, kw, start
 
 
 def latest_day_total(

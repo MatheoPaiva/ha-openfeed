@@ -51,4 +51,8 @@ USAGE_RESTATE_DAYS: Final = 7
 # The usage endpoint may return 500 for windows longer than 30 days.
 USAGE_WINDOW_DAYS: Final = 30
 
+# Account detail (plans), invoices and billing change slowly.
+ACCOUNT_DETAIL_REFRESH_HOURS: Final = 24
+BILLING_REFRESH_HOURS: Final = 6
+
 PENDING_KEY: Final = f"{DOMAIN}_pending"
