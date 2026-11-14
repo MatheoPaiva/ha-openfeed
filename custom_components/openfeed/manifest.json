@@ -1,0 +1,14 @@
+{
+  "domain": "openfeed",
+  "name": "openfeed Consumer Data Right",
+  "codeowners": ["@purcell-lab"],
+  "config_flow": true,
+  "dependencies": ["http", "recorder"],
+  "documentation": "https://github.com/purcell-lab/ha-openfeed",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/purcell-lab/ha-openfeed/issues",
+  "loggers": ["custom_components.openfeed"],
+  "requirements": [],
+  "version": "0.1.0"
+}

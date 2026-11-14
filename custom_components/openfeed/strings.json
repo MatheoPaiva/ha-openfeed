@@ -1,0 +1,87 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect openfeed",
+        "description": "Home Assistant has generated a keypair for this integration. The private key stays in Home Assistant.\n\n1. Register an app at [openfeed]({register_url}). Request the energy scope, and the banking scope if you want bank balances.\n2. Choose **Inline JWKS JSON** and paste this public key set:\n\n```\n{jwks}\n```\n\n3. Enter the **OAuth2 client ID** (starts with `app-`) and the **App ID** (bare UUID) that openfeed returns.\n\nThe Home Assistant URL must be reachable from the browser you sign in with. openfeed returns you to it after sign-in and consent.",
+        "data": {
+          "client_id": "OAuth2 client ID",
+          "app_id": "App ID",
+          "redirect_base": "Home Assistant URL",
+          "include_banking": "Also share banking data"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reconnect openfeed",
+        "description": "openfeed needs you to sign in again. If your sharing grant was revoked, you can choose accounts to share again."
+      },
+      "reconfigure": {
+        "title": "Change what you share",
+        "description": "Sign in to openfeed again to change which accounts Home Assistant can read. The existing grant is updated in place.",
+        "data": {
+          "include_banking": "Also share banking data"
+        }
+      }
+    },
+    "progress": {
+      "authorize": "Sign in to openfeed in the new window, then return here.",
+      "consent": "Choose which accounts to share in the openfeed window, then return here."
+    },
+    "error": {
+      "invalid_client_id": "The OAuth2 client ID starts with app- followed by a UUID.",
+      "invalid_app_id": "The App ID is a bare UUID, without the app- prefix.",
+      "invalid_url": "Enter a full URL, starting with http:// or https://."
+    },
+    "abort": {
+      "already_configured": "This openfeed account is already configured.",
+      "reauth_successful": "Reconnected to openfeed.",
+      "reconfigure_successful": "Sharing updated.",
+      "wrong_account": "You signed in as a different openfeed user.",
+      "invalid_client": "openfeed rejected the client. Check the client ID and that the JWKS shown was saved on the app.",
+      "invalid_scope": "openfeed rejected a scope. Make sure the app registration includes the energy (and banking, if selected) scope.",
+      "par_failed": "openfeed did not accept the sign-in request: {error}",
+      "access_denied": "Sign-in was cancelled.",
+      "auth_error": "openfeed returned an error during sign-in.",
+      "state_mismatch": "The sign-in response did not match this setup. Start again.",
+      "issuer_mismatch": "The sign-in response came from an unexpected issuer.",
+      "no_refresh_token": "openfeed did not issue a refresh token, so Home Assistant could not stay connected.",
+      "token_failed": "Home Assistant could not obtain tokens from openfeed.",
+      "consent_declined": "No accounts were shared.",
+      "grant_mismatch": "The sharing grant openfeed returned did not match the consent."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "openfeed options",
+        "data": {
+          "backfill_days": "Days of usage to import on first load"
+        }
+      }
+    }
+  },
+  "issues": {
+    "credit_exhausted": {
+      "title": "openfeed credits exhausted",
+      "description": "openfeed suspended data sharing because the developer credit balance on your registered app is zero. Top up credits in the openfeed dashboard; sharing resumes automatically."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "energy_balance": {"name": "Account balance"},
+      "latest_invoice_amount": {"name": "Latest invoice amount"},
+      "latest_invoice_due": {"name": "Latest invoice due"},
+      "latest_invoice_status": {"name": "Latest invoice status"},
+      "plan": {"name": "Plan"},
+      "latest_day_consumption": {"name": "Latest day grid consumption"},
+      "latest_day_export": {"name": "Latest day grid export"},
+      "latest_day_controlled_load": {"name": "Latest day controlled load"},
+      "der_approved_capacity": {"name": "DER approved capacity"},
+      "der_export_limit": {"name": "DER export limit"},
+      "substituted_intervals": {"name": "Substituted intervals"},
+      "usage_fetched": {"name": "Usage last fetched"},
+      "banking_current_balance": {"name": "Current balance"},
+      "banking_available_balance": {"name": "Available balance"}
+    }
+  }
+}

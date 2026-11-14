@@ -1,0 +1,12 @@
+# Lint only; formatting is not enforced. The rule set is ruff's default (pyflakes
+# plus the pycodestyle error classes that are bugs rather than style), stated
+# explicitly so a ruff upgrade cannot widen it silently.
+target-version = "py313"
+line-length = 120
+
+[lint]
+select = ["E4", "E7", "E9", "F"]
+
+[lint.per-file-ignores]
+# Test fixtures import after pytest plugins load.
+"tests/*" = ["E402"]
