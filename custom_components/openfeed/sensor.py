@@ -88,6 +88,12 @@ def _invoice(a: EnergyAccountData, key: str) -> Any:
     return (a.latest_invoice or {}).get(key)
 
 
+def _payment_attrs(record: dict[str, Any] | None) -> dict[str, Any]:
+    if not record:
+        return {}
+    return {"date": record.get("date"), "method": record.get("method")}
+
+
 def _statement_attrs(a: EnergyAccountData) -> dict[str, Any]:
     b = a.billing
     if b is None or b.last_statement_date is None:
@@ -101,7 +107,7 @@ def _statement_attrs(a: EnergyAccountData) -> dict[str, Any]:
         "net": round(charges - credits, 2),
         "statistics": [
             f"{DOMAIN}:{account_key(a.account['accountId'])}_{s}"
-            for s in ("charges", "credits", "payments", "invoiced")
+            for s in ("charges", "credits", "payments", "refunds", "invoiced")
         ],
     }
 
@@ -191,6 +197,27 @@ ACCOUNT_SENSORS: tuple[AccountSensorDescription, ...] = (
         attrs_fn=lambda a: _statement_attrs(a),
         available_fn=lambda a: bool(a.billing and a.billing.last_statement_date),
         exists_fn=lambda a: a.billing is not None and a.billing.transactions > 0,
+    ),
+    AccountSensorDescription(
+        key="last_payment",
+        translation_key="last_payment",
+        device_class=SensorDeviceClass.MONETARY,
+        suggested_display_precision=2,
+        value_fn=lambda a: (a.billing.last_payment or {}).get("amount") if a.billing else None,
+        attrs_fn=lambda a: _payment_attrs(a.billing.last_payment if a.billing else None),
+        available_fn=lambda a: bool(a.billing and a.billing.last_payment),
+        exists_fn=lambda a: a.billing is not None and a.billing.transactions > 0,
+    ),
+    AccountSensorDescription(
+        key="last_refund",
+        translation_key="last_refund",
+        device_class=SensorDeviceClass.MONETARY,
+        suggested_display_precision=2,
+        value_fn=lambda a: (a.billing.last_refund or {}).get("amount") if a.billing else None,
+        attrs_fn=lambda a: _payment_attrs(a.billing.last_refund if a.billing else None),
+        available_fn=lambda a: bool(a.billing and a.billing.last_refund),
+        # Only for accounts that have had a refund.
+        exists_fn=lambda a: bool(a.billing and a.billing.last_refund),
     ),
     AccountSensorDescription(
         key="month_to_date_credits",

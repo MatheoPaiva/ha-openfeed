@@ -32,8 +32,13 @@ CONF_DPOP_KEY: Final = "dpop_key_pem"
 CONF_TOKEN: Final = "token"
 CONF_GRANT_ID: Final = "grant_id"
 CONF_SUBJECT: Final = "subject"
+# Bumped when a money statistic changes meaning and must be rebuilt.
+CONF_MONEY_STATS_VERSION: Final = "money_stats_version"
+MONEY_STATS_VERSION: Final = 2
 
 # Options.
+CONF_SIDEBAR_DASHBOARD: Final = "sidebar_dashboard"
+DASHBOARD_URL_PATH: Final = "openfeed"
 CONF_BACKFILL_DAYS: Final = "backfill_days"
 DEFAULT_BACKFILL_DAYS: Final = 60
 MAX_BACKFILL_DAYS: Final = 365

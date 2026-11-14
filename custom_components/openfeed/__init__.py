@@ -9,6 +9,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
 from .const import CONF_GRANT_ID, DOMAIN
+from .dashboard import async_register_dashboard, async_remove_dashboard, wants_dashboard
 from .coordinator import OpenfeedConfigEntry, OpenfeedCoordinator
 from .session import OpenfeedSession
 from .views import async_register_views
@@ -43,9 +44,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenfeedConfigEntry) -> 
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
+    if wants_dashboard(hass):
+        async_register_dashboard(hass)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: OpenfeedConfigEntry) -> bool:
     """Unload a config entry."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    others = [
+        e
+        for e in hass.config_entries.async_loaded_entries(DOMAIN)
+        if e.entry_id != entry.entry_id
+    ]
+    if not others or not wants_dashboard(hass):
+        async_remove_dashboard(hass)
+    return unloaded

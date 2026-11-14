@@ -201,3 +201,25 @@ async def test_reauth_replaces_existing_grant(hass: HomeAssistant, openfeed, key
     result = await hass.config_entries.flow.async_configure(result["flow_id"])
     assert result["reason"] == "reauth_successful"
     assert entry.data[CONF_TOKEN]["access_token"] == "a3"
+
+
+async def test_reconfigure_changes_redirect_url(hass: HomeAssistant, openfeed, key_pems) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN, unique_id=f"{CLIENT_ID}_user-1",
+        data={"client_id": CLIENT_ID, "app_id": APP_ID, "redirect_base": "https://ha.example",
+              "issuer": ISSUER, "scopes": ["openid", "offline_access", "energy"],
+              "app_key_pem": key_pems[0], "dpop_key_pem": key_pems[1], "grant_id": "g-1",
+              "token": {"access_token": "old", "refresh_token": "old", "expires_at": 0}},
+    )
+    entry.add_to_hass(hass)
+    result = await entry.start_reconfigure_flow(hass)
+    assert result["step_id"] == "reconfigure"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"include_banking": False, "redirect_base": "ftp://nope"})
+    assert result["errors"] == {"redirect_base": "invalid_url"}
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {"include_banking": False, "redirect_base": "https://abc123.ui.nabu.casa/"})
+    assert result["type"] is FlowResultType.EXTERNAL_STEP
+    assert openfeed["par"]["redirect_uri"] == "https://abc123.ui.nabu.casa/api/openfeed/callback"
+    assert openfeed["par"]["grant_management_action"] == "replace"

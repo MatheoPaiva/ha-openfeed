@@ -7,6 +7,9 @@
 #   <acct_key>  the account statistic key, shown in the "statistics" attribute of
 #               sensor.<account>_last_statement_charges (openfeed:<acct_key>_charges)
 #
+# The integration already adds this layout to the sidebar as "Energy data".
+# Use this file only to build your own dashboard.
+#
 # Paste as a new view: Settings > Dashboards > open a dashboard > Edit >
 # three-dot menu > Raw configuration editor, and add this under "views:".
 title: Energy account
@@ -21,6 +24,7 @@ cards:
       - entity: sensor.<account>_month_to_date_charges
       - entity: sensor.<account>_month_to_date_credits
       - entity: sensor.<account>_account_balance
+      - entity: sensor.<account>_last_payment
   - type: entities
     title: Last 30 days and latest day
     entities:
@@ -41,6 +45,17 @@ cards:
         name: Import
       - entity: openfeed:<nmi_key>_export
         name: Export
+  - type: statistics-graph
+    title: Grid power, hourly mean and peak (last 7 days)
+    period: hour
+    days_to_show: 7
+    chart_type: line
+    stat_types: [mean, max]
+    entities:
+      - entity: openfeed:<nmi_key>_consumption_power
+        name: Grid import
+      - entity: openfeed:<nmi_key>_export_power
+        name: Grid export
   - type: statistics-graph
     title: Daily peak power (5-minute meter reads)
     period: day
@@ -63,8 +78,10 @@ cards:
         name: Charges
       - entity: openfeed:<acct_key>_credits
         name: Credits
-      - entity: openfeed:<acct_key>_invoiced
-        name: Invoiced
+      - entity: openfeed:<acct_key>_payments
+        name: Payments
+      - entity: openfeed:<acct_key>_refunds
+        name: Refunds
   - type: calendar
     title: Bills
     initial_view: listWeek

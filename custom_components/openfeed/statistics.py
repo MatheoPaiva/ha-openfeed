@@ -6,7 +6,7 @@ consumption and return to grid. Each meter also gets
 openfeed:<meter_key>_<series>_power in kW (hourly mean, min and max of the
 meter's interval reads), which keeps peak demand and peak export that the
 hourly energy sums hide. Each account gets money series
-openfeed:<account_key>_<charges|credits|payments|invoiced>. Each refresh re-imports a trailing window,
+openfeed:<account_key>_<charges|credits|payments|refunds|invoiced>. Each refresh re-imports a trailing window,
 restarting the running sum from the last statistic before the window, so
 finalised substitute reads overwrite earlier values.
 """
@@ -32,7 +32,7 @@ from homeassistant.const import UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
-from .billing import CHARGES, CREDITS, INVOICED, PAYMENTS
+from .billing import CHARGES, CREDITS, INVOICED, PAYMENTS, REFUNDS
 from .usage import CONSUMPTION, CONTROLLED_LOAD, EXPORT, cumulative
 
 _LOGGER = logging.getLogger(__name__)
@@ -52,7 +52,8 @@ POWER_NAMES = {
 MONEY_NAMES = {
     CHARGES: "billed charges",
     CREDITS: "billed credits",
-    PAYMENTS: "payments (signed as reported)",
+    PAYMENTS: "payments made",
+    REFUNDS: "refunds received",
     INVOICED: "invoiced",
 }
 
@@ -107,6 +108,11 @@ async def async_import_meter(
     return await _import_sums(
         hass, key, label, hourly, SERIES_NAMES, UnitOfEnergy.KILO_WATT_HOUR, "energy"
     )
+
+
+async def async_clear(hass: HomeAssistant, stat_ids: list[str]) -> None:
+    """Delete statistics, for series whose meaning changed between versions."""
+    get_instance(hass).async_clear_statistics(stat_ids)
 
 
 async def async_import_money(

@@ -42,6 +42,7 @@ from .const import (
     CONF_APP_ID,
     CONF_APP_KEY,
     CONF_BACKFILL_DAYS,
+    CONF_SIDEBAR_DASHBOARD,
     CONF_CLIENT_ID,
     CONF_DPOP_KEY,
     CONF_GRANT_ID,
@@ -303,33 +304,48 @@ class OpenfeedConfigFlow(ConfigFlow, domain=DOMAIN):
         return await self.async_step_authorize()
 
     async def async_step_reconfigure(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Change which accounts are shared (grant replace)."""
+        """Change which accounts are shared (grant replace) or the redirect URL."""
         entry = self._get_reconfigure_entry()
-        if user_input is None:
-            return self.async_show_form(
-                step_id="reconfigure",
-                data_schema=vol.Schema(
-                    {
-                        vol.Required(
-                            CONF_INCLUDE_BANKING,
-                            default=SCOPE_BANKING in entry.data.get(CONF_SCOPES, []),
-                        ): bool,
-                    }
-                ),
-            )
-        self._data = {**entry.data, CONF_SCOPES: _scopes(user_input[CONF_INCLUDE_BANKING])}
-        self._grant_action = "replace" if entry.data.get(CONF_GRANT_ID) else "create"
-        async_register_views(self.hass)
-        return await self.async_step_authorize()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            base = str(user_input.get(CONF_REDIRECT_BASE) or "").strip().rstrip("/")
+            if not base.startswith(("http://", "https://")):
+                errors[CONF_REDIRECT_BASE] = "invalid_url"
+            else:
+                self._data = {
+                    **entry.data,
+                    CONF_SCOPES: _scopes(user_input[CONF_INCLUDE_BANKING]),
+                    CONF_REDIRECT_BASE: base,
+                }
+                self._grant_action = "replace" if entry.data.get(CONF_GRANT_ID) else "create"
+                async_register_views(self.hass)
+                return await self.async_step_authorize()
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_INCLUDE_BANKING,
+                        default=SCOPE_BANKING in entry.data.get(CONF_SCOPES, []),
+                    ): bool,
+                    vol.Required(
+                        CONF_REDIRECT_BASE,
+                        default=entry.data.get(CONF_REDIRECT_BASE) or self._default_base(),
+                    ): str,
+                }
+            ),
+            errors=errors,
+        )
 
 
 class OpenfeedOptionsFlow(OptionsFlow):
-    """Options: how far back to import usage on first load."""
+    """Options: usage backfill depth and the sidebar dashboard."""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         if user_input is not None:
             return self.async_create_entry(data=user_input)
         current = self.config_entry.options.get(CONF_BACKFILL_DAYS, DEFAULT_BACKFILL_DAYS)
+        sidebar = self.config_entry.options.get(CONF_SIDEBAR_DASHBOARD, True)
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
@@ -337,6 +353,7 @@ class OpenfeedOptionsFlow(OptionsFlow):
                     vol.Required(CONF_BACKFILL_DAYS, default=current): vol.All(
                         vol.Coerce(int), vol.Range(min=1, max=MAX_BACKFILL_DAYS)
                     ),
+                    vol.Required(CONF_SIDEBAR_DASHBOARD, default=sidebar): bool,
                 }
             ),
         )

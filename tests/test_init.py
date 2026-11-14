@@ -177,6 +177,8 @@ async def test_setup_creates_sensors_and_statistics(hass, entry, aioclient_mock)
     assert any(i.endswith("_invoiced") for i in ids)
     assert any(i.endswith("_payments") for i in ids)
     assert any(i.endswith("_credits") for i in ids)
+    # The legacy signed payments series was rebuilt once.
+    assert entry.data["money_stats_version"] == 2
 
     # Every API call carried a DPoP-bound token.
     for method, url, data, headers in aioclient_mock.mock_calls:
@@ -215,7 +217,9 @@ async def test_diagnostics_redacts(hass, entry, aioclient_mock) -> None:
         assert secret not in text
     lines = diag["energy"]["account_0"]["billing_lines"]
     assert {line["amount"] for line in lines} == {12.5, -4.0, -100.0}
-    assert diag["energy"]["account_0"]["history"]["series_totals"]["payments"] == -100.0
+    totals = diag["energy"]["account_0"]["history"]["series_totals"]
+    assert totals["payments"] == 100.0
+    assert "refunds" not in totals
 
 
 async def test_plan_sensor_removed_when_no_plan(hass, entry, aioclient_mock) -> None:
@@ -238,3 +242,50 @@ def _mock_api_no_plan(aioclient_mock):
     # The first registered mock wins, so replace the detail mock.
     aioclient_mock._mocks = [m for m in aioclient_mock._mocks if str(m.url) != a]
     aioclient_mock.get(a, json={"data": {"accountId": ACC, "plans": None}})
+
+
+async def test_sidebar_dashboard(hass, entry, aioclient_mock, hass_ws_client) -> None:
+    from homeassistant.components.frontend import DATA_PANELS
+    from homeassistant.setup import async_setup_component
+
+    assert await async_setup_component(hass, "lovelace", {})
+    _mock_api(aioclient_mock)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    panel = hass.data[DATA_PANELS]["openfeed"]
+    assert panel.sidebar_title == "Energy data"
+    assert panel.component_name == "lovelace"
+
+    client = await hass_ws_client(hass)
+    await client.send_json({"id": 1, "type": "lovelace/config", "url_path": "openfeed"})
+    msg = await client.receive_json()
+    assert msg["success"], msg
+    config = msg["result"]
+    cards = config["views"][0]["cards"]
+    titles = [c.get("title") for c in cards]
+    assert "Grid power, hourly mean and peak (last 7 days)" in titles
+    assert "Monthly charges, credits and payments" in titles
+    # Every entity the dashboard names exists, and no NMI leaks into names.
+    states = {s.entity_id for s in hass.states.async_all()}
+    for card in cards:
+        for row in card.get("entities", []):
+            ref = row["entity"] if isinstance(row, dict) else row
+            if ref.startswith("openfeed:"):
+                continue
+            assert ref in states, ref
+            if isinstance(row, dict):
+                assert NMI not in row["name"]
+    power = next(c for c in cards if c["title"].startswith("Grid power"))
+    assert power["entities"][0]["entity"] == f"openfeed:nmi_{NMI.lower()}_consumption_power"
+
+    # Switching the option off removes the panel on reload.
+    hass.config_entries.async_update_entry(entry, options={"sidebar_dashboard": False})
+    await hass.async_block_till_done()
+    assert "openfeed" not in hass.data[DATA_PANELS]
+
+
+async def test_dashboard_skipped_without_lovelace(hass, entry, aioclient_mock) -> None:
+    _mock_api(aioclient_mock)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED

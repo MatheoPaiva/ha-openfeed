@@ -23,14 +23,16 @@ from .api import (
     TokenRejectedError,
     cancel_on_revocation,
 )
-from .billing import BillingSummary, summarise_billing
+from .billing import PAYMENTS, BillingSummary, summarise_billing
 from .const import (
     ACCOUNT_DETAIL_REFRESH_HOURS,
     BILLING_REFRESH_HOURS,
     CONF_BACKFILL_DAYS,
+    CONF_MONEY_STATS_VERSION,
     CONF_SCOPES,
     DEFAULT_BACKFILL_DAYS,
     DOMAIN,
+    MONEY_STATS_VERSION,
     SCOPE_BANKING,
     SCOPE_ENERGY,
     UPDATE_INTERVAL_MINUTES,
@@ -43,10 +45,12 @@ from .session import OpenfeedSession
 from .der import DerSummary, summarise_der
 from .statistics import (
     account_key,
+    async_clear,
     async_import_meter,
     async_import_money,
     async_import_power,
     meter_key,
+    statistic_id,
 )
 from .usage import AEST, UsageSummary, summarise, usage_windows
 
@@ -138,6 +142,7 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
         self.session = session
         self._usage_cache: dict[str, MeterData] = {}
         self._backfilled: set[str] = set()
+        self._money_migrated = False
         # meter ID -> series -> AEST date -> kWh, merged across refreshes
         self._daily_history: dict[str, dict[str, dict[date, float]]] = {}
         # account ID -> (fetched at, plans list or None)
@@ -180,6 +185,12 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
         except (OpenfeedApiError, OpenfeedAuthError) as err:
             raise UpdateFailed(f"openfeed request failed: {err}") from err
         ir.async_delete_issue(self.hass, DOMAIN, ISSUE_CREDITS)
+        if self._money_migrated:
+            self._money_migrated = False
+            self.hass.config_entries.async_update_entry(
+                self.config_entry,
+                data={**self.config_entry.data, CONF_MONEY_STATS_VERSION: MONEY_STATS_VERSION},
+            )
         return data
 
     async def _collect(self) -> OpenfeedData:
@@ -261,6 +272,11 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
         summary = summarise_billing(transactions, invoices, dt_util.now(AEST).date())
         if status == "ok" and not summary.transactions:
             status = "empty"
+        if status == "ok" and self.config_entry.data.get(CONF_MONEY_STATS_VERSION, 1) < MONEY_STATS_VERSION:
+            # Before v0.1.4 the payments series held signed payments and
+            # refunds together. Rebuild it from scratch as payments only.
+            await async_clear(self.hass, [statistic_id(account_key(account_id), PAYMENTS)])
+            self._money_migrated = True
         if summary.hourly:
             currency = (item.balance or {}).get("currency") or "AUD"
             label = f"openfeed {item.account.get('providerName') or 'energy'} account"

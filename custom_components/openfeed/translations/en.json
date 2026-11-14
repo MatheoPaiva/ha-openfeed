@@ -19,7 +19,11 @@
         "title": "Change what you share",
         "description": "Sign in to openfeed again to change which accounts Home Assistant can read. The existing grant is updated in place.",
         "data": {
-          "include_banking": "Also share banking data"
+          "include_banking": "Also share banking data",
+          "redirect_base": "Home Assistant URL"
+        },
+        "data_description": {
+          "redirect_base": "Where openfeed sends your browser back after sign-in. Use your Nabu Casa remote URL, your own domain, or a local address your browser can reach."
         }
       }
     },
@@ -55,7 +59,11 @@
       "init": {
         "title": "openfeed options",
         "data": {
-          "backfill_days": "Days of usage to import on first load"
+          "backfill_days": "Days of usage to import on first load",
+          "sidebar_dashboard": "Show the openfeed dashboard in the sidebar"
+        },
+        "data_description": {
+          "sidebar_dashboard": "A read-only dashboard built from this integration's entities and statistics. It updates with each release."
         }
       }
     }
@@ -148,6 +156,12 @@
       },
       "usage_history_days": {
         "name": "Usage history"
+      },
+      "last_payment": {
+        "name": "Last payment"
+      },
+      "last_refund": {
+        "name": "Last refund"
       }
     },
     "calendar": {

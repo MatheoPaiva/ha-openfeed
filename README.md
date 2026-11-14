@@ -5,8 +5,11 @@ Bring your own Consumer Data Right (CDR) energy data into Home Assistant through
 Energy dashboard, your account balance and latest bill as sensors, and optionally your
 bank balances.
 
+![openfeed sidebar dashboard](docs/images/dashboard-desktop.png)
+
 | Version | Home Assistant | Status |
 |---|---|---|
+| 0.1.4 | 2026.4 or later | Current: sidebar dashboard, payments and refunds split |
 | 0.1.0 | 2026.4 or later | First release |
 
 ## How it works
@@ -40,7 +43,9 @@ data and asks you to reconnect.
 | Latest invoice amount, due date, status | `sensor.energy_<account>_latest_invoice_*` | Hourly poll |
 | Plan name and tariff detail | `sensor.energy_<account>_plan` (only when the retailer shares a plan) | Daily |
 | Month-to-date charges and credits | `sensor.energy_<account>_month_to_date_charges`, `_credits`, with a split by transaction type (only when the retailer shares billing transactions) | Every 6 hours |
-| Billing and invoice history | External statistics `openfeed:acct_<hash>_charges` (gross charges), `_credits` (credits, as a positive amount), `_payments` (signed as the retailer reports them), `_invoiced` (AUD) | Every 6 hours |
+| Billing and invoice history | External statistics `openfeed:acct_<hash>_charges` (gross charges), `_credits` (credits), `_payments` (money you paid), `_refunds` (money paid back to you), `_invoiced` (AUD). All but invoiced are positive amounts | Every 6 hours |
+| Last payment and last refund | `sensor.<account>_last_payment`, `_last_refund` (amount, with date and method). The refund sensor only appears once a refund has been paid | Every 6 hours |
+| Sidebar dashboard | **Energy data** in the sidebar, at `/openfeed` | Live |
 | DER approved capacity and export limit | `sensor.meter_<nmi>_der_*` (when the retailer publishes DER data) | Hourly poll |
 | DER equipment and solar capacity | `sensor.meter_<nmi>_der_solar_capacity`, with every inverter and device as attributes | Hourly poll |
 | DER register issues | `sensor.meter_<nmi>_der_register_issues` | Hourly poll |
@@ -68,9 +73,38 @@ surface it:
 - **Device page.** The meter device's **Visit** link opens the Energy settings, where
   you can add the import and export statistics as a grid source. Only do this if no
   other grid meter feeds your Energy dashboard, or energy is counted twice.
-- **Ready-made dashboard.** [docs/dashboard.yaml](docs/dashboard.yaml) is a view with
-  month-to-date totals, daily energy, daily peaks, monthly billing, the bills calendar
-  and the DER register. Replace the placeholders and paste it into a dashboard.
+- **Sidebar dashboard.** See below. If you would rather build your own,
+  [docs/dashboard.yaml](docs/dashboard.yaml) is the same layout as a view you can
+  paste into any dashboard.
+
+### Sidebar dashboard
+
+The integration adds **Energy data** to the sidebar. It is generated from your shared
+accounts and meters each time it opens, so it needs no setup and updates with each
+release. It is read-only; to customise it, copy the cards from
+[docs/dashboard.yaml](docs/dashboard.yaml) into your own dashboard. Turn it off in
+**Settings > Devices & services > openfeed > Configure**.
+
+| Section | What it shows |
+|---|---|
+| Grid energy | Import and export this month, last 30 days and latest day, with latest-day peaks |
+| Daily grid energy | 30 days of daily import and export from the meter |
+| Grid power | 7 days of hourly mean and peak import and export power |
+| Daily peak grid power | 30 days of the highest 5-minute import and export |
+| Solar and battery register | DER capacity, export limit, register issues and history depth |
+| Bills and payments | Balance, latest invoice, last payment and last refund |
+| Charges and credits | This month and last statement |
+| Monthly charges, credits and payments | 12 months of each as bars |
+| Bills | Invoices on a calendar |
+
+![Grid energy and power](docs/images/dashboard-energy.png)
+
+![Bills, payments and DER register](docs/images/dashboard-billing.png)
+
+Grid power is a day behind, because it comes from your retailer's meter reads. It is
+held as long-term statistics, not as an entity, so it does not appear in the History
+panel. Use the dashboard or **Developer tools > Statistics** (search "grid import
+power").
 
 ### How much history
 
@@ -87,10 +121,21 @@ the power statistics keep the hourly maximum of the meter's own interval reads, 
 ### Billing
 
 Retailers usually date every billing line on the statement date, so the money
-statistics step once a month rather than daily. Payments keep the retailer's sign, so a
-refund paid out and a payment received have opposite signs. Diagnostics list every
-billing line (date, type, amount, GST) without descriptions, invoice numbers or meter
-IDs, so you can check how your retailer reports credits and refunds.
+statistics step once a month rather than daily.
+
+Payments and refunds are kept apart. The CDR standard defines a payment amount only as
+"the amount paid", and retailers use the account ledger convention where a credit to
+your account is negative. So a negative payment line is a payment you made, and a
+positive payment line is money paid back to you, such as a refund of a credit balance.
+Both are stored as positive amounts in their own series.
+
+Feed-in credits only appear if your retailer itemises them as billing lines. Some
+retailers net them into the invoice instead, so the invoice can be well below the
+charges.
+
+Diagnostics list every billing line (date, type, amount, GST, payment method) without
+descriptions, invoice numbers or meter IDs, so you can check how your retailer reports
+credits and refunds.
 
 ### DER register
 
@@ -122,7 +167,7 @@ Bank transactions, payment schedules and personal details are not requested.
 
 ## Setup
 
-1. Install the integration (see below). Marketplace installs need no restart.
+1. Install the integration (see below). A first Marketplace install needs no restart.
 2. Go to **Settings > Devices & services > Add integration > openfeed Consumer Data Right**.
 3. The first screen shows a public JSON Web Key Set (JWKS). Home Assistant generated the
    keys; the private keys never leave Home Assistant.
@@ -135,11 +180,41 @@ Bank transactions, payment schedules and personal details are not requested.
    - **App ID**, the bare UUID.
 6. Check the Home Assistant URL. openfeed sends your browser back to
    `<url>/api/openfeed/callback`, so it must be reachable from the browser you sign in
-   with. It does not need to be reachable from the internet.
+   with. It does not need to be reachable from the internet. See
+   [Nabu Casa and remote access](#nabu-casa-and-remote-access).
 7. Sign in to openfeed, approve the app, then choose the accounts to share.
 
-To change which accounts are shared, use **Reconfigure** on the integration. The existing
-grant is updated in place rather than a new one created.
+To change which accounts are shared, or the Home Assistant URL, use **Reconfigure** on
+the integration. The existing grant is updated in place rather than a new one created.
+
+## Nabu Casa and remote access
+
+The integration works with Home Assistant Cloud (Nabu Casa), your own domain, or a
+local address only.
+
+- **No inbound connection after setup.** Home Assistant polls `api.openfeed.au`. There
+  is no webhook, so you do not need Nabu Casa webhooks, port forwarding or a public URL
+  for data to flow.
+- **Sign-in is a browser redirect.** During setup, reauth and reconfigure, openfeed sends
+  your browser back to `<Home Assistant URL>/api/openfeed/callback` and
+  `/api/openfeed/consent/<state>`. openfeed's servers never call Home Assistant, so the
+  URL only has to work in the browser you use.
+- **No redirect URI to register.** openfeed takes the redirect URI from each signed
+  pushed authorisation request, so the app registration has no redirect field and any
+  URL works.
+- **Default URL.** The setup form fills in your external URL, or your Nabu Casa remote
+  URL (`https://<id>.ui.nabu.casa`) when no external URL is set, or else your internal
+  URL.
+
+| You sign in from | Use this Home Assistant URL |
+|---|---|
+| Anywhere, with Nabu Casa | Your Nabu Casa remote URL, `https://<id>.ui.nabu.casa` |
+| Anywhere, with your own domain | Your domain, for example `https://ha.example.com` |
+| A browser on your home network | Your local URL, for example `http://homeassistant.local:8123` |
+| The Home Assistant Companion app | A URL that works away from home, usually the Nabu Casa remote URL |
+
+The URL is saved with the entry and only used again for reauth and reconfigure. If you
+change how you reach Home Assistant, update it with **Reconfigure**.
 
 ## Costs
 
@@ -169,7 +244,8 @@ See [PRIVACY.md](PRIVACY.md) for what the integration collects and where it goes
 ### HACS
 
 Add `https://github.com/purcell-lab/ha-openfeed` as a custom repository of type
-Integration, then install **openfeed Consumer Data Right**.
+Integration, then install **openfeed Consumer Data Right**. A first install needs no
+restart. Updates need a restart, because Home Assistant only loads new code at start-up.
 
 ### Manual
 

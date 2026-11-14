@@ -6,9 +6,14 @@ account, booked at each line's executionDateTime:
 
 * charges   positive non-payment line items (gross charges)
 * credits   negative non-payment line items, as a positive amount credited
-* payments  payment line items, signed exactly as the retailer reports them,
-            so a refund paid out and a payment received have opposite signs
+* payments  money you paid to the retailer, as a positive amount
+* refunds   money the retailer paid back to you, as a positive amount
 * invoiced  invoice totals, booked at 00:00 AEST on the issue date
+
+The CDR standard defines a payment amount only as "the amount paid". Retailers
+use the account ledger convention, where a credit to the account is negative,
+so a negative payment line is a payment you made and a positive payment line is
+money returned to you (a refund of a credit balance).
 
 The raw line items (date, type, amount, GST) are kept for diagnostics.
 Free-text descriptions are never kept.
@@ -28,6 +33,7 @@ from .usage import AEST
 CHARGES = "charges"
 CREDITS = "credits"
 PAYMENTS = "payments"
+REFUNDS = "refunds"
 INVOICED = "invoiced"
 PAYMENT_TYPE = "payment"
 MAX_LINES = 2000
@@ -50,6 +56,9 @@ class BillingSummary:
     last_statement_date: date | None = None
     last_statement_charges: float | None = None
     last_statement_credits: float | None = None
+    # The newest payment you made and the newest refund paid to you.
+    last_payment: dict[str, Any] | None = None
+    last_refund: dict[str, Any] | None = None
     # Newest first: {"date", "type", "amount", "gst", "has_invoice", "has_meter"}
     lines: list[dict[str, Any]] = field(default_factory=list)
 
@@ -75,6 +84,14 @@ def _num(value: Any) -> float | None:
         return None if value is None else float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _method(tx: dict[str, Any], kind: str) -> dict[str, Any]:
+    """The payment method (DIRECT_DEBIT, CARD, BPAY...) for payment lines."""
+    if kind.lower() != PAYMENT_TYPE:
+        return {}
+    detail = tx.get(PAYMENT_TYPE) or {}
+    return {"method": detail.get("method")} if isinstance(detail, dict) else {}
 
 
 def _round(values: dict[str, float]) -> dict[str, float]:
@@ -111,6 +128,8 @@ def summarise_billing(
     charges_mtd: dict[str, float] = defaultdict(float)
     credits_mtd: dict[str, float] = defaultdict(float)
     lines: list[tuple[datetime, dict[str, Any]]] = []
+    latest_payment: list[Any] = [None, None]
+    latest_refund: list[Any] = [None, None]
     for tx in transactions:
         when = _parse_dt(tx.get("executionDateTime"))
         amount = _num(tx.get("amount"))
@@ -128,6 +147,7 @@ def summarise_billing(
                     "gst": _num(tx.get("gst")),
                     "has_invoice": bool(tx.get("invoiceNumber")),
                     "has_meter": bool(tx.get("meterId")),
+                    **_method(tx, kind),
                 },
             )
         )
@@ -136,7 +156,16 @@ def summarise_billing(
             summary.oldest_transaction = local_day
         hour = when.replace(minute=0, second=0, microsecond=0)
         if kind.lower() == PAYMENT_TYPE:
-            hourly[PAYMENTS][hour] += amount
+            series = PAYMENTS if amount < 0 else REFUNDS
+            hourly[series][hour] += abs(amount)
+            record = {
+                "amount": round(abs(amount), 2),
+                "date": local_day.isoformat(),
+                **_method(tx, kind),
+            }
+            latest = latest_payment if amount < 0 else latest_refund
+            if latest[0] is None or when > latest[0]:
+                latest[0], latest[1] = when, record
             continue
         this_month = local_day >= month_start
         if amount >= 0:
@@ -157,6 +186,8 @@ def summarise_billing(
         if summary.oldest_invoice is None or local_day < summary.oldest_invoice:
             summary.oldest_invoice = local_day
         hourly[INVOICED][issued.replace(minute=0, second=0, microsecond=0)] += amount
+    summary.last_payment = latest_payment[1]
+    summary.last_refund = latest_refund[1]
     summary.hourly = {s: dict(sorted(v.items())) for s, v in hourly.items() if v}
     _last_statement(summary)
     summary.lines = [line for _when, line in sorted(lines, key=lambda x: x[0], reverse=True)][
