@@ -34,7 +34,8 @@ CONF_GRANT_ID: Final = "grant_id"
 CONF_SUBJECT: Final = "subject"
 # Bumped when a money statistic changes meaning and must be rebuilt.
 CONF_MONEY_STATS_VERSION: Final = "money_stats_version"
-MONEY_STATS_VERSION: Final = 2
+# 3: v0.1.5 rebuilds payments again; v0.1.4 could carry a stale running sum.
+MONEY_STATS_VERSION: Final = 3
 
 # Options.
 CONF_SIDEBAR_DASHBOARD: Final = "sidebar_dashboard"

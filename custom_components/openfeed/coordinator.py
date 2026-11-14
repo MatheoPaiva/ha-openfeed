@@ -23,7 +23,7 @@ from .api import (
     TokenRejectedError,
     cancel_on_revocation,
 )
-from .billing import PAYMENTS, BillingSummary, summarise_billing
+from .billing import PAYMENTS, REFUNDS, BillingSummary, summarise_billing
 from .const import (
     ACCOUNT_DETAIL_REFRESH_HOURS,
     BILLING_REFRESH_HOURS,
@@ -272,16 +272,20 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
         summary = summarise_billing(transactions, invoices, dt_util.now(AEST).date())
         if status == "ok" and not summary.transactions:
             status = "empty"
+        rebuild: frozenset[str] = frozenset()
         if status == "ok" and self.config_entry.data.get(CONF_MONEY_STATS_VERSION, 1) < MONEY_STATS_VERSION:
             # Before v0.1.4 the payments series held signed payments and
-            # refunds together. Rebuild it from scratch as payments only.
-            await async_clear(self.hass, [statistic_id(account_key(account_id), PAYMENTS)])
+            # refunds together, and v0.1.4 could carry a stale running sum.
+            # Clear both series and rebuild them from zero.
+            key = account_key(account_id)
+            rebuild = frozenset({PAYMENTS, REFUNDS})
+            await async_clear(self.hass, [statistic_id(key, s) for s in sorted(rebuild)])
             self._money_migrated = True
         if summary.hourly:
             currency = (item.balance or {}).get("currency") or "AUD"
             label = f"openfeed {item.account.get('providerName') or 'energy'} account"
             await async_import_money(
-                self.hass, account_key(account_id), label, summary.hourly, currency
+                self.hass, account_key(account_id), label, summary.hourly, currency, rebuild
             )
         self._billing_cache[account_id] = (now, status, summary)
         item.billing_fetched_at, item.billing_status, item.billing = now, status, summary

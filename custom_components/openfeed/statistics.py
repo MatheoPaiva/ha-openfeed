@@ -111,8 +111,14 @@ async def async_import_meter(
 
 
 async def async_clear(hass: HomeAssistant, stat_ids: list[str]) -> None:
-    """Delete statistics, for series whose meaning changed between versions."""
-    get_instance(hass).async_clear_statistics(stat_ids)
+    """Delete statistics, for series whose meaning changed between versions.
+
+    Waits for the recorder to finish, so a following import does not read a
+    running sum from rows that are about to be deleted.
+    """
+    instance = get_instance(hass)
+    instance.async_clear_statistics(stat_ids)
+    await instance.async_block_till_done()
 
 
 async def async_import_money(
@@ -121,9 +127,16 @@ async def async_import_money(
     label: str,
     hourly: dict[str, dict[datetime, float]],
     currency: str,
+    rebuild: frozenset[str] = frozenset(),
 ) -> dict[str, int]:
-    """Import hourly money series for one account."""
-    return await _import_sums(hass, key, label, hourly, MONEY_NAMES, currency, None)
+    """Import hourly money series for one account.
+
+    Series in rebuild start their running sum at zero instead of continuing
+    from earlier rows, because those rows were just cleared.
+    """
+    return await _import_sums(
+        hass, key, label, hourly, MONEY_NAMES, currency, None, rebuild
+    )
 
 
 async def async_import_power(
@@ -164,6 +177,7 @@ async def _import_sums(
     names: dict[str, str],
     unit: str,
     unit_class: str | None,
+    rebuild: frozenset[str] = frozenset(),
 ) -> dict[str, int]:
     written: dict[str, int] = {}
     for series, values in hourly.items():
@@ -171,7 +185,7 @@ async def _import_sums(
             continue
         stat_id = statistic_id(key, series)
         first_hour = min(values)
-        base = await _sum_before(hass, stat_id, first_hour)
+        base = 0.0 if series in rebuild else await _sum_before(hass, stat_id, first_hour)
         rows = [
             StatisticData(start=hour, state=state, sum=total)
             for hour, state, total in cumulative(values, base)

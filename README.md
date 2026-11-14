@@ -9,7 +9,7 @@ bank balances.
 
 | Version | Home Assistant | Status |
 |---|---|---|
-| 0.1.4 | 2026.4 or later | Current: sidebar dashboard, payments and refunds split |
+| 0.1.5 | 2026.4 or later | Current: sidebar dashboard, payments and refunds split |
 | 0.1.0 | 2026.4 or later | First release |
 
 ## How it works

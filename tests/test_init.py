@@ -178,7 +178,7 @@ async def test_setup_creates_sensors_and_statistics(hass, entry, aioclient_mock)
     assert any(i.endswith("_payments") for i in ids)
     assert any(i.endswith("_credits") for i in ids)
     # The legacy signed payments series was rebuilt once.
-    assert entry.data["money_stats_version"] == 2
+    assert entry.data["money_stats_version"] == 3
 
     # Every API call carried a DPoP-bound token.
     for method, url, data, headers in aioclient_mock.mock_calls:
@@ -289,3 +289,68 @@ async def test_dashboard_skipped_without_lovelace(hass, entry, aioclient_mock) -
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.LOADED
+
+
+async def test_legacy_payments_rebuilt_without_stale_sum(hass, entry, aioclient_mock) -> None:
+    from datetime import UTC, datetime
+
+    from homeassistant.components.recorder.models import (
+        StatisticData,
+        StatisticMeanType,
+        StatisticMetaData,
+    )
+    from homeassistant.components.recorder.statistics import async_add_external_statistics
+
+    from custom_components.openfeed.statistics import account_key
+
+    stat_id = f"openfeed:{account_key(ACC)}_payments"
+    async_add_external_statistics(
+        hass,
+        StatisticMetaData(
+            mean_type=StatisticMeanType.NONE, has_sum=True, name="old", source=DOMAIN,
+            statistic_id=stat_id, unit_class=None, unit_of_measurement="AUD",
+        ),
+        [StatisticData(start=datetime(2026, 3, 4, 1, tzinfo=UTC), state=6151.22, sum=6151.22)],
+    )
+    await async_wait_recording_done(hass)
+    _mock_api(aioclient_mock)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    await async_wait_recording_done(hass)
+    last = await hass.async_add_executor_job(get_last_statistics, hass, 1, stat_id, True, {"sum"})
+    assert last[stat_id][0]["sum"] == pytest.approx(100.0)
+
+
+async def test_rebuild_ignores_earlier_running_sum(hass) -> None:
+    from datetime import UTC, datetime
+
+    from homeassistant.components.recorder.models import (
+        StatisticData,
+        StatisticMeanType,
+        StatisticMetaData,
+    )
+    from homeassistant.components.recorder.statistics import async_add_external_statistics
+
+    from custom_components.openfeed.statistics import async_import_money
+
+    stat_id = "openfeed:acct_test_payments"
+    async_add_external_statistics(
+        hass,
+        StatisticMetaData(
+            mean_type=StatisticMeanType.NONE, has_sum=True, name="old", source=DOMAIN,
+            statistic_id=stat_id, unit_class=None, unit_of_measurement="AUD",
+        ),
+        [StatisticData(start=datetime(2026, 3, 4, 1, tzinfo=UTC), state=50.0, sum=50.0)],
+    )
+    await async_wait_recording_done(hass)
+    hour = datetime(2026, 6, 9, 0, tzinfo=UTC)
+    await async_import_money(hass, "acct_test", "x", {"payments": {hour: 14.27}}, "AUD")
+    await async_wait_recording_done(hass)
+    last = await hass.async_add_executor_job(get_last_statistics, hass, 1, stat_id, True, {"sum"})
+    assert last[stat_id][0]["sum"] == pytest.approx(64.27)
+    await async_import_money(
+        hass, "acct_test", "x", {"payments": {hour: 14.27}}, "AUD", frozenset({"payments"})
+    )
+    await async_wait_recording_done(hass)
+    last = await hass.async_add_executor_job(get_last_statistics, hass, 1, stat_id, True, {"sum"})
+    assert last[stat_id][0]["sum"] == pytest.approx(14.27)
