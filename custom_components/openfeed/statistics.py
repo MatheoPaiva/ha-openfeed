@@ -113,12 +113,13 @@ async def async_import_meter(
 async def async_clear(hass: HomeAssistant, stat_ids: list[str]) -> None:
     """Delete statistics, for series whose meaning changed between versions.
 
-    Waits for the recorder to finish, so a following import does not read a
-    running sum from rows that are about to be deleted.
+    The recorder runs queued tasks in order, so a following import lands after
+    the delete. Callers rebuild those series from zero (see rebuild) instead of
+    reading a running sum. Never wait on the recorder here: during startup it
+    does not drain its queue until bootstrap finishes, so waiting would stall
+    Home Assistant startup.
     """
-    instance = get_instance(hass)
-    instance.async_clear_statistics(stat_ids)
-    await instance.async_block_till_done()
+    get_instance(hass).async_clear_statistics(stat_ids)
 
 
 async def async_import_money(
