@@ -785,12 +785,16 @@ class MeterSensor(_Base):
         self._account_id = account_id
         self._meter_id = meter_id
         meter = coordinator.data.energy[account_id].meters[meter_id]
+        nmi = meter.meter.get("nationalMeteringId")
         self._attr_unique_id = f"{coordinator.config_entry.unique_id}_{meter.key}_{description.key}"
-        # The full NMI is only on the disabled-by-default NMI sensor.
+        # Legacy entries keep the NMI naming their entity IDs already use. On
+        # newer entries the full NMI is only on the disabled-by-default NMI sensor.
+        legacy = coordinator.meter_salt is None
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, f"meter_{meter.key}")},
-            name=meter_label(meter.meter),
+            name=f"Meter {nmi or meter.key}" if legacy else meter_label(meter.meter),
             model=f"Service point ({meter.meter.get('detectedReadType') or 'unknown'} reads)",
+            serial_number=nmi if legacy else None,
             entry_type=DeviceEntryType.SERVICE,
             configuration_url=ENERGY_CONFIG_URL,
         )

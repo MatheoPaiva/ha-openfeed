@@ -7,7 +7,7 @@ from typing import Any
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_APP_KEY, CONF_DPOP_KEY, CONF_METER_KEY_SALT, CONF_SUBJECT, CONF_TOKEN
+from .const import CONF_APP_KEY, CONF_DPOP_KEY, CONF_SUBJECT, CONF_TOKEN
 from .coordinator import OpenfeedConfigEntry
 
 TO_REDACT = {
@@ -15,7 +15,6 @@ TO_REDACT = {
     CONF_DPOP_KEY,
     CONF_TOKEN,
     CONF_SUBJECT,
-    CONF_METER_KEY_SALT,
     "access_token",
     "refresh_token",
     "accountNumber",
@@ -26,6 +25,7 @@ TO_REDACT = {
     "servicePointId",
     "invoiceNumber",
     "grant_id",
+    "meter_key_salt",
     "client_id",
     "app_id",
     # Nested identifiers and free text that can identify a person or site.

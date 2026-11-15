@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 import logging
+import secrets
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -147,6 +148,7 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
             update_interval=timedelta(minutes=UPDATE_INTERVAL_MINUTES),
         )
         self.session = session
+        self._ensure_meter_salt()
         self._usage_cache: dict[str, MeterData] = {}
         self._backfilled: set[str] = set()
         self._money_migrated = False
@@ -158,6 +160,15 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
         self._meter_detail_cache: dict[str, tuple[datetime, dict[str, Any] | None]] = {}
         # account ID -> (fetched at, status, summary)
         self._billing_cache: dict[str, tuple[datetime, str, BillingSummary | None]] = {}
+
+    def _ensure_meter_salt(self) -> None:
+        """Give a new (non-legacy) entry its meter key salt, once, for good."""
+        data = self.config_entry.data
+        if data.get(CONF_METER_KEY_SCHEME) == METER_KEY_LEGACY or data.get(CONF_METER_KEY_SALT):
+            return
+        self.hass.config_entries.async_update_entry(
+            self.config_entry, data={**data, CONF_METER_KEY_SALT: secrets.token_hex(16)}
+        )
 
     @property
     def meter_salt(self) -> str | None:

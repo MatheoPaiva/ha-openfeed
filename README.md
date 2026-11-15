@@ -37,8 +37,8 @@ data and asks you to reconnect.
 |---|---|---|
 | Grid consumption, export, controlled load | External statistics `openfeed:<meter_key>_consumption`, `_export`, `_controlled_load` (hourly, kWh) | Batch; openfeed refreshes every 6 hours, meter data usually lags a day |
 | Grid import and export power | External statistics `openfeed:<meter_key>_consumption_power`, `_export_power` (hourly mean, min and max, kW, from the meter's 5 or 30 minute reads) | As above |
-| Latest full day per series | `sensor.meter_ending_<last 4>_latest_day_grid_*` | As above |
-| Latest full day peak import and export | `sensor.meter_ending_<last 4>_latest_day_peak_grid_import`, `_export` (kW, with the interval start) | As above |
+| Latest full day per series | `sensor.<meter>_latest_day_grid_*` | As above |
+| Latest full day peak import and export | `sensor.<meter>_latest_day_peak_grid_import`, `_export` (kW, with the interval start) | As above |
 | Account balance | `sensor.energy_<account>_account_balance` | Live, cached up to 15 minutes |
 | Latest invoice amount, due date, status | `sensor.energy_<account>_latest_invoice_*` | Hourly poll |
 | Plan name, fees, discounts and incentives | `sensor.energy_<account>_plan` (only when the retailer shares a plan) | Daily |
@@ -48,19 +48,19 @@ data and asks you to reconnect.
 | Daily supply charge | `sensor.energy_<account>_daily_supply_charge` (AUD/day including GST) | Every minute |
 | Demand charge | `sensor.energy_<account>_demand_charge` (including GST, only on demand tariffs) | Every minute |
 | Next tariff change | `sensor.energy_<account>_next_tariff_change` (timestamp, looks two days ahead) | Every minute |
-| Meter detail | `sensor.meter_ending_<last 4>_meter_status`, `_meter_read_type`, `_jurisdiction`, `_service_point_classification`, `_generator`, and `_nmi` (disabled by default). Every meter detail field except the NMI is also an attribute of the status sensor | Daily |
+| Meter detail | `sensor.<meter>_meter_status`, `_meter_read_type`, `_jurisdiction`, `_service_point_classification`, `_generator`, and `_nmi` (disabled by default). Every meter detail field except the NMI is also an attribute of the status sensor | Daily |
 | Month-to-date charges and credits | `sensor.energy_<account>_month_to_date_charges`, `_credits`, with a split by transaction type (only when the retailer shares billing transactions) | Every 6 hours |
 | Billing and invoice history | External statistics `openfeed:acct_<hash>_charges` (gross charges), `_credits` (credits), `_payments` (money you paid), `_refunds` (money paid back to you), `_invoiced` (AUD). All but invoiced are positive amounts | Every 6 hours |
 | Last payment and last refund | `sensor.<account>_last_payment`, `_last_refund` (amount, with date and method). The refund sensor only appears once a refund has been paid | Every 6 hours |
 | Sidebar dashboard | **Energy data** in the sidebar, at `/openfeed` | Live |
-| DER approved capacity and export limit | `sensor.meter_ending_<last 4>_der_*` (when the retailer publishes DER data) | Hourly poll |
-| DER equipment and solar capacity | `sensor.meter_ending_<last 4>_der_solar_capacity`, with every inverter and device as attributes | Hourly poll |
-| DER register issues | `sensor.meter_ending_<last 4>_der_register_issues` | Hourly poll |
-| Month-to-date and last 30 days grid import and export | `sensor.meter_ending_<last 4>_month_to_date_grid_*`, `_last_30_days_grid_*` (kWh, full days only) | With usage |
+| DER approved capacity and export limit | `sensor.<meter>_der_*` (when the retailer publishes DER data) | Hourly poll |
+| DER equipment and solar capacity | `sensor.<meter>_der_solar_capacity`, with every inverter and device as attributes | Hourly poll |
+| DER register issues | `sensor.<meter>_der_register_issues` | Hourly poll |
+| Month-to-date and last 30 days grid import and export | `sensor.<meter>_month_to_date_grid_*`, `_last_30_days_grid_*` (kWh, full days only) | With usage |
 | Last statement charges and credits | `sensor.<account>_last_statement_charges`, `_credits` (with net and the statistic IDs as attributes) | Every 6 hours |
 | Bills calendar | `calendar.<account>_bills`: one event per invoice, from issue date to due date, with amount and status | Hourly poll |
-| Usage history held | `sensor.meter_ending_<last 4>_usage_history` (days, with oldest date and every statistic ID) | With usage |
-| Substituted intervals | `sensor.meter_ending_<last 4>_substituted_intervals` | With usage |
+| Usage history held | `sensor.<meter>_usage_history` (days, with oldest date and every statistic ID) | With usage |
+| Substituted intervals | `sensor.<meter>_substituted_intervals` | With usage |
 | Bank current and available balance (optional) | `sensor.bank_<account>_*_balance` | Live, cached up to 15 minutes |
 
 Add the three external statistics in **Settings > Dashboards > Energy** under grid
@@ -74,12 +74,13 @@ Basic (accumulation) meter reads are not imported to statistics; only interval r
 
 **Meter keys and the NMI.** The NMI identifies your premises, so it is kept out of
 statistic IDs, entity IDs, device names and attributes. `<meter_key>` is
-`meter_<hash>`, an HMAC of the NMI with a random salt kept in the config entry, and
-meter devices are named `Meter ending <last 4 digits>`. The full NMI is only on the
-NMI sensor, which is disabled by default. Entries created with v0.1.7 or earlier keep their
-existing `nmi_<nmi>` statistic IDs, so Energy dashboard sources and history keep
-working; their device names still change to `Meter ending <last 4>`, which affects
-only newly created entity IDs.
+`meter_<hash>`, an HMAC of the NMI with a random salt kept in the config entry. Meter
+devices are named `Meter ending <last 4 digits>`, so `<meter>` is
+`meter_ending_<last 4>`. The full NMI is only on the NMI sensor, which is disabled by
+default. Entries created with v0.1.7 or earlier keep their existing names and IDs
+(`<meter_key>` is `nmi_<nmi>` and `<meter>` is `meter_<nmi>`), so Energy dashboard
+sources, history and automations keep working; the NMI attribute on the meter status
+sensor is removed from them too.
 
 Most of the history lives in long-term statistics, which have no entity. Three places
 surface it:
