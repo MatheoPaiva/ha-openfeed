@@ -18,11 +18,12 @@ Private keys are generated inside Home Assistant and never displayed.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import re
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import voluptuous as vol
 
@@ -39,6 +40,7 @@ from homeassistant.helpers.network import NoURLAvailableError, get_url
 
 from .const import (
     CALLBACK_PATH,
+    CONF_ALLOW_HTTP,
     CONF_APP_ID,
     CONF_APP_KEY,
     CONF_BACKFILL_DAYS,
@@ -75,6 +77,36 @@ _CLIENT_ID_RE = re.compile(r"^app-[0-9a-fA-F-]{36}$")
 _APP_ID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
 
 
+def _is_loopback(host: str) -> bool:
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def is_insecure_redirect(base: str) -> bool:
+    """True for a plain http:// URL to anything but a loopback host."""
+    parts = urlsplit(base)
+    return parts.scheme == "http" and not _is_loopback(parts.hostname or "")
+
+
+def redirect_error(base: str, allow_http: bool) -> str | None:
+    """Validate the Home Assistant URL openfeed returns the browser to.
+
+    FAPI 2.0 requires https redirect URIs, except for loopback. The code and
+    the consent return travel in the URL, so plain http to another host is
+    only accepted when the user explicitly allows it.
+    """
+    parts = urlsplit(base)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return "invalid_url"
+    if is_insecure_redirect(base) and not allow_http:
+        return "insecure_url"
+    return None
+
+
 def _scopes(include_banking: bool) -> list[str]:
     scopes = [SCOPE_OPENID, SCOPE_OFFLINE, SCOPE_ENERGY]
     if include_banking:
@@ -97,6 +129,8 @@ class OpenfeedConfigFlow(ConfigFlow, domain=DOMAIN):
         self._subject: str | None = None
         self._failure: str | None = None
         self._grant_action = "create"
+        # Show the "allow plain http" box once a plain http URL was refused.
+        self._offer_http = False
 
     @staticmethod
     @callback
@@ -129,8 +163,9 @@ class OpenfeedConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors[CONF_CLIENT_ID] = "invalid_client_id"
             if not _APP_ID_RE.match(app_id):
                 errors[CONF_APP_ID] = "invalid_app_id"
-            if not base.startswith(("http://", "https://")):
-                errors[CONF_REDIRECT_BASE] = "invalid_url"
+            if error := redirect_error(base, bool(user_input.get(CONF_ALLOW_HTTP))):
+                errors[CONF_REDIRECT_BASE] = error
+                self._offer_http = self._offer_http or error == "insecure_url"
             if not errors:
                 self._data.update(
                     {
@@ -144,16 +179,20 @@ class OpenfeedConfigFlow(ConfigFlow, domain=DOMAIN):
                 return await self.async_step_authorize()
 
         jwks = public_jwks(load_private_key(self._data[CONF_APP_KEY]))
+        fields: dict[Any, Any] = {
+            vol.Required(CONF_CLIENT_ID): str,
+            vol.Required(CONF_APP_ID): str,
+            vol.Required(CONF_REDIRECT_BASE, default=self._default_base()): str,
+            vol.Required(CONF_INCLUDE_BANKING, default=False): bool,
+        }
+        if self._offer_http:
+            fields[vol.Optional(CONF_ALLOW_HTTP, default=False)] = bool
+        schema = vol.Schema(fields)
+        if user_input is not None:
+            schema = self.add_suggested_values_to_schema(schema, user_input)
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_CLIENT_ID): str,
-                    vol.Required(CONF_APP_ID): str,
-                    vol.Required(CONF_REDIRECT_BASE, default=self._default_base()): str,
-                    vol.Required(CONF_INCLUDE_BANKING, default=False): bool,
-                }
-            ),
+            data_schema=schema,
             description_placeholders={
                 "register_url": REGISTER_URL,
                 "jwks": json.dumps(jwks),
@@ -169,6 +208,11 @@ class OpenfeedConfigFlow(ConfigFlow, domain=DOMAIN):
         self._state = random_token()
         self._nonce = random_token()
         self._redirect_uri = f"{self._data[CONF_REDIRECT_BASE]}{CALLBACK_PATH}"
+        if is_insecure_redirect(self._data[CONF_REDIRECT_BASE]):
+            _LOGGER.warning(
+                "openfeed sign-in returns to a plain http:// URL; the authorisation code "
+                "travels unencrypted on your network. Use an https URL if you can"
+            )
         grant_id = self._data.get(CONF_GRANT_ID) if self._grant_action == "replace" else None
         request_uri = await auth.push_authorization_request(
             redirect_uri=self._redirect_uri,
@@ -309,8 +353,9 @@ class OpenfeedConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             base = str(user_input.get(CONF_REDIRECT_BASE) or "").strip().rstrip("/")
-            if not base.startswith(("http://", "https://")):
-                errors[CONF_REDIRECT_BASE] = "invalid_url"
+            if error := redirect_error(base, bool(user_input.get(CONF_ALLOW_HTTP))):
+                errors[CONF_REDIRECT_BASE] = error
+                self._offer_http = self._offer_http or error == "insecure_url"
             else:
                 self._data = {
                     **entry.data,
@@ -320,22 +365,22 @@ class OpenfeedConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._grant_action = "replace" if entry.data.get(CONF_GRANT_ID) else "create"
                 async_register_views(self.hass)
                 return await self.async_step_authorize()
-        return self.async_show_form(
-            step_id="reconfigure",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_INCLUDE_BANKING,
-                        default=SCOPE_BANKING in entry.data.get(CONF_SCOPES, []),
-                    ): bool,
-                    vol.Required(
-                        CONF_REDIRECT_BASE,
-                        default=entry.data.get(CONF_REDIRECT_BASE) or self._default_base(),
-                    ): str,
-                }
-            ),
-            errors=errors,
-        )
+        fields: dict[Any, Any] = {
+            vol.Required(
+                CONF_INCLUDE_BANKING,
+                default=SCOPE_BANKING in entry.data.get(CONF_SCOPES, []),
+            ): bool,
+            vol.Required(
+                CONF_REDIRECT_BASE,
+                default=entry.data.get(CONF_REDIRECT_BASE) or self._default_base(),
+            ): str,
+        }
+        if self._offer_http:
+            fields[vol.Optional(CONF_ALLOW_HTTP, default=False)] = bool
+        schema = vol.Schema(fields)
+        if user_input is not None:
+            schema = self.add_suggested_values_to_schema(schema, user_input)
+        return self.async_show_form(step_id="reconfigure", data_schema=schema, errors=errors)
 
 
 class OpenfeedOptionsFlow(OptionsFlow):

@@ -8,7 +8,11 @@
           "client_id": "OAuth2 client ID",
           "app_id": "App ID",
           "redirect_base": "Home Assistant URL",
-          "include_banking": "Also share banking data"
+          "include_banking": "Also share banking data",
+          "allow_insecure_redirect": "Allow a plain http:// URL (not recommended)"
+        },
+        "data_description": {
+          "allow_insecure_redirect": "The sign-in code and the consent return travel unencrypted to a plain http:// address. Only tick this if the browser and Home Assistant share a network you trust. An https URL (Nabu Casa or your own domain) is safer."
         }
       },
       "reauth_confirm": {
@@ -20,10 +24,12 @@
         "description": "Sign in to openfeed again to change which accounts Home Assistant can read. The existing grant is updated in place.",
         "data": {
           "include_banking": "Also share banking data",
-          "redirect_base": "Home Assistant URL"
+          "redirect_base": "Home Assistant URL",
+          "allow_insecure_redirect": "Allow a plain http:// URL (not recommended)"
         },
         "data_description": {
-          "redirect_base": "Where openfeed sends your browser back after sign-in. Use your Nabu Casa remote URL, your own domain, or a local address your browser can reach."
+          "redirect_base": "Where openfeed sends your browser back after sign-in. Use your Nabu Casa remote URL, your own domain, or a local address your browser can reach.",
+          "allow_insecure_redirect": "The sign-in code and the consent return travel unencrypted to a plain http:// address. Only tick this if the browser and Home Assistant share a network you trust. An https URL (Nabu Casa or your own domain) is safer."
         }
       }
     },
@@ -34,7 +40,8 @@
     "error": {
       "invalid_client_id": "The OAuth2 client ID starts with app- followed by a UUID.",
       "invalid_app_id": "The App ID is a bare UUID, without the app- prefix.",
-      "invalid_url": "Enter a full URL, starting with http:// or https://."
+      "invalid_url": "Enter a full URL, starting with http:// or https://.",
+      "insecure_url": "This is a plain http:// address. Secure sign-in (FAPI 2.0) needs https, except for localhost. Use your Nabu Casa or https URL, or tick the box below to allow plain http on a network you trust."
     },
     "abort": {
       "already_configured": "This openfeed account is already configured.",

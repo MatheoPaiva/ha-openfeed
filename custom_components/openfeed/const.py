@@ -26,6 +26,8 @@ CONF_APP_ID: Final = "app_id"
 CONF_ISSUER: Final = "issuer"
 CONF_REDIRECT_BASE: Final = "redirect_base"
 CONF_INCLUDE_BANKING: Final = "include_banking"
+# Flow-only: the user accepts a plain http:// redirect to a non-loopback host.
+CONF_ALLOW_HTTP: Final = "allow_insecure_redirect"
 CONF_SCOPES: Final = "scopes"
 CONF_APP_KEY: Final = "app_key_pem"
 CONF_DPOP_KEY: Final = "dpop_key_pem"
