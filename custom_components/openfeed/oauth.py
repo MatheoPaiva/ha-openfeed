@@ -13,13 +13,16 @@ from __future__ import annotations
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import aiohttp
 import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from .crypto import ASSERTION_TYPE, client_assertion, dpop_proof
+
+
+_LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 class OpenfeedAuthError(Exception):
@@ -47,6 +50,34 @@ class Discovery:
     par_endpoint: str
     jwks_uri: str
     revocation_endpoint: str | None = None
+
+    def check_origins(self) -> None:
+        """Every endpoint the client posts secrets to must be on the issuer origin.
+
+        The client assertion, the refresh token and the authorisation code all
+        go to these endpoints, so a discovery document that points them
+        anywhere else is refused. Plain HTTP is only accepted for a loopback
+        issuer (tests and local development).
+        """
+        issuer = urlsplit(self.issuer)
+        if issuer.scheme != "https" and not (
+            issuer.scheme == "http" and issuer.hostname in _LOOPBACK
+        ):
+            raise OpenfeedAuthError("invalid_discovery", "issuer is not https")
+        origin = (issuer.scheme, issuer.hostname, issuer.port)
+        endpoints = {
+            "authorization_endpoint": self.authorization_endpoint,
+            "token_endpoint": self.token_endpoint,
+            "pushed_authorization_request_endpoint": self.par_endpoint,
+            "jwks_uri": self.jwks_uri,
+            "revocation_endpoint": self.revocation_endpoint,
+        }
+        for name, url in endpoints.items():
+            if url is None:
+                continue
+            parts = urlsplit(url)
+            if (parts.scheme, parts.hostname, parts.port) != origin:
+                raise OpenfeedAuthError("invalid_discovery", f"{name} is not on the issuer origin")
 
     @classmethod
     def from_document(cls, doc: dict[str, Any]) -> Discovery:
@@ -169,6 +200,7 @@ class OpenfeedAuth:
             disc = Discovery.from_document(doc)
             if disc.issuer.rstrip("/") != self.issuer:
                 raise OpenfeedAuthError("issuer_mismatch", disc.issuer)
+            disc.check_origins()
             self._discovery = disc
         return self._discovery
 
