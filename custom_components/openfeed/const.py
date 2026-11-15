@@ -66,3 +66,6 @@ ACCOUNT_DETAIL_REFRESH_HOURS: Final = 24
 BILLING_REFRESH_HOURS: Final = 6
 
 PENDING_KEY: Final = f"{DOMAIN}_pending"
+# Keys generated for a setup that has not finished yet, kept so a retry
+# reuses the JWKS already pasted into openfeed. Removed once an entry exists.
+PENDING_KEYS_STORAGE: Final = f"{DOMAIN}.pending_keys"

@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Connect openfeed",
-        "description": "Home Assistant has generated a keypair for this integration. The private key stays in Home Assistant.\n\n1. Register an app at [openfeed]({register_url}). Request the energy scope, and the banking scope if you want bank balances.\n2. Choose **Inline JWKS JSON** and paste this public key set:\n\n```\n{jwks}\n```\n\n3. Enter the **OAuth2 client ID** (starts with `app-`) and the **App ID** (bare UUID) that openfeed returns.\n\nThe Home Assistant URL must be reachable from the browser you sign in with. openfeed returns you to it after sign-in and consent.",
+        "description": "Home Assistant has generated a keypair for this integration. The private key stays in Home Assistant, and the same key is reused if you start setup again, so you only paste it into openfeed once. Its key ID is `{kid}`.\n\n1. Register an app at [openfeed]({register_url}). Request the energy scope, and the banking scope if you want bank balances.\n2. Choose **Inline JWKS JSON** and paste this public key set:\n\n```\n{jwks}\n```\n\n3. Enter the **OAuth2 client ID** (starts with `app-`) and the **App ID** (bare UUID) that openfeed returns.\n\nThe Home Assistant URL must be reachable from the browser you sign in with. openfeed returns you to it after sign-in and consent.",
         "data": {
           "client_id": "OAuth2 client ID",
           "app_id": "App ID",
@@ -41,7 +41,18 @@
       "invalid_client_id": "The OAuth2 client ID starts with app- followed by a UUID.",
       "invalid_app_id": "The App ID is a bare UUID, without the app- prefix.",
       "invalid_url": "Enter a full URL, starting with http:// or https://.",
-      "insecure_url": "This is a plain http:// address. Secure sign-in (FAPI 2.0) needs https, except for localhost. Use your Nabu Casa or https URL, or tick the box below to allow plain http on a network you trust."
+      "insecure_url": "This is a plain http:// address. Secure sign-in (FAPI 2.0) needs https, except for localhost. Use your Nabu Casa or https URL, or tick the box below to allow plain http on a network you trust.",
+      "invalid_client": "openfeed rejected the client. Check the client ID, and that the JWKS shown above is saved on the app, then submit to try again.",
+      "invalid_scope": "openfeed rejected a scope. Make sure the app registration includes the energy (and banking, if selected) scope, then submit to try again.",
+      "par_failed": "openfeed did not accept the sign-in request ({error}). Check the details, then submit to try again.",
+      "access_denied": "Sign-in was cancelled. Submit to try again.",
+      "auth_error": "openfeed returned an error during sign-in. Submit to try again.",
+      "state_mismatch": "The sign-in response did not match this setup. Submit to try again.",
+      "issuer_mismatch": "The sign-in response came from an unexpected issuer. Submit to try again.",
+      "no_refresh_token": "openfeed did not issue a refresh token, so Home Assistant could not stay connected. Submit to try again.",
+      "token_failed": "Home Assistant could not obtain tokens from openfeed. Submit to try again.",
+      "consent_declined": "No accounts were shared. Submit to try again and choose at least one account.",
+      "grant_mismatch": "The sharing grant openfeed returned did not match the consent. Submit to try again."
     },
     "abort": {
       "already_configured": "This openfeed account is already configured.",
