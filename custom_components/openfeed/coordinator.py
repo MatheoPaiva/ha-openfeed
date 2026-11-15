@@ -61,6 +61,15 @@ _LOGGER = logging.getLogger(__name__)
 
 ISSUE_CREDITS = "credit_exhausted"
 
+# Errors that end the whole refresh. Anything else from one meter's detail,
+# DER or usage call is contained to that meter, and its last good data is kept.
+FATAL_ERRORS = (GrantRevokedError, TokenRejectedError, CreditExhaustedError, RateLimitedError)
+
+
+def _contained(err: Exception) -> bool:
+    """True for an API error that should only affect one meter."""
+    return isinstance(err, OpenfeedApiError) and not isinstance(err, FATAL_ERRORS)
+
 
 @dataclass(slots=True)
 class MeterData:
@@ -78,6 +87,11 @@ class MeterData:
     usage_fetched_at: datetime | None = None
     # series -> AEST date -> kWh, merged across refreshes (backfill plus restatements)
     daily_history: dict[str, dict[date, float]] = field(default_factory=dict)
+    # "ok", or "error" when the last call failed and older data (if any) is shown.
+    usage_status: str = "ok"
+    der_status: str = "ok"
+    # "list" when the meters list failed and the last good meter data is shown.
+    meters_source: str = "list"
 
 
 @dataclass(slots=True)
@@ -233,9 +247,19 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
             item.latest_invoice = _latest_invoice(invoices)
             item.invoice_count = len(invoices)
             item.invoices = invoices
-        if isinstance(meters, OpenfeedApiError):
-            raise meters
         await self._apply_billing(item, invoices if isinstance(invoices, list) else [])
+        if isinstance(meters, OpenfeedApiError):
+            cached = [md for md in self._usage_cache.values() if md.account_id == account_id]
+            if isinstance(meters, FATAL_ERRORS) or not cached:
+                raise meters
+            # Keep showing the meters from the last good refresh.
+            _LOGGER.warning(
+                "openfeed meters list failed (%s); keeping the last meter data", meters
+            )
+            for md in cached:
+                md.meters_source = "cache"
+                item.meters[md.meter["meterId"]] = md
+            return item
         for meter in meters:
             item.meters[meter["meterId"]] = await self._collect_meter(account_id, meter)
         return item
@@ -318,16 +342,36 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
         cached = self._usage_cache.get(meter_id)
         md = MeterData(account_id=account_id, meter=meter, key=meter_key(meter))
         await self._with_meter_detail(md)
-        md.der = await self.session.client.energy_der(account_id, meter_id)
+        try:
+            md.der = await self.session.client.energy_der(account_id, meter_id)
+        except OpenfeedApiError as err:
+            if not _contained(err):
+                raise
+            _LOGGER.warning("openfeed DER request for a meter failed: %s", err)
+            md.der = cached.der if cached else None
+            md.der_status = "error"
         md.der_summary = summarise_der(md.der)
         now = dt_util.utcnow()
-        if cached and cached.usage_fetched_at and now - cached.usage_fetched_at < timedelta(
-            hours=USAGE_REFRESH_HOURS
+        # A failed usage refresh is retried on the next poll, not in 3 hours.
+        if (
+            cached
+            and cached.usage_status == "ok"
+            and cached.usage_fetched_at
+            and now - cached.usage_fetched_at < timedelta(hours=USAGE_REFRESH_HOURS)
         ):
             md.usage, md.usage_fetched_at = cached.usage, cached.usage_fetched_at
         else:
-            md.usage = await self._refresh_usage(md)
-            md.usage_fetched_at = now
+            try:
+                md.usage = await self._refresh_usage(md)
+                md.usage_fetched_at = now
+            except OpenfeedApiError as err:
+                if not _contained(err):
+                    raise
+                # Keep the last good summary and when it was fetched.
+                _LOGGER.warning("openfeed usage request for a meter failed: %s", err)
+                md.usage = cached.usage if cached else None
+                md.usage_fetched_at = cached.usage_fetched_at if cached else None
+                md.usage_status = "error"
         md.daily_history = self._daily_history.get(meter_id, {})
         self._usage_cache[meter_id] = md
         return md

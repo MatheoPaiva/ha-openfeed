@@ -651,6 +651,9 @@ METER_SENSORS: tuple[MeterSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda m: m.usage_fetched_at,
         attrs_fn=lambda m: {
+            "usage_status": m.usage_status,
+            "der_status": m.der_status,
+            "meters_source": m.meters_source,
             "oldest_usage_date": (
                 m.usage.oldest_day.isoformat() if m.usage and m.usage.oldest_day else None
             ),
