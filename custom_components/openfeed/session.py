@@ -99,7 +99,11 @@ class OpenfeedSession:
         _LOGGER.debug("openfeed access token refreshed")
 
     def clear_grant(self) -> None:
-        """Forget the grant after a revocation so reauth starts a new one."""
-        self.hass.config_entries.async_update_entry(
-            self.entry, data={**self.entry.data, CONF_GRANT_ID: None}
-        )
+        """Forget the grant and tokens after a revocation.
+
+        Reauth starts a new grant and a new sign-in, so the old tokens are no
+        longer needed and are not kept in the config entry.
+        """
+        data = {**self.entry.data, CONF_GRANT_ID: None}
+        data.pop(CONF_TOKEN, None)
+        self.hass.config_entries.async_update_entry(self.entry, data=data)

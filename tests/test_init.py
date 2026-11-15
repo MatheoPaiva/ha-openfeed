@@ -232,6 +232,61 @@ async def test_revocation_triggers_reauth(hass, entry, aioclient_mock) -> None:
     flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
     assert flows and flows[0]["context"]["source"] == "reauth"
     assert entry.data["grant_id"] is None
+    # The old tokens are not kept once the grant has gone.
+    assert "token" not in entry.data
+
+
+def _mock_discovery(aioclient_mock, revocation: bool = True):
+    doc = {
+        "issuer": ISSUER,
+        "authorization_endpoint": f"{ISSUER}/auth",
+        "token_endpoint": f"{ISSUER}/token",
+        "pushed_authorization_request_endpoint": f"{ISSUER}/request",
+        "jwks_uri": f"{ISSUER}/jwks",
+    }
+    if revocation:
+        doc["revocation_endpoint"] = f"{ISSUER}/token/revocation"
+    aioclient_mock.get(f"{ISSUER}/.well-known/openid-configuration", json=doc)
+
+
+async def test_remove_entry_revokes_refresh_token(hass, entry, aioclient_mock) -> None:
+    _mock_api(aioclient_mock)
+    _mock_discovery(aioclient_mock)
+    aioclient_mock.post(f"{ISSUER}/token/revocation", status=200, text="")
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+    posts = [c for c in aioclient_mock.mock_calls if c[0] == "POST"]
+    assert len(posts) == 1
+    form = posts[0][2]
+    assert form["token"] == "rt"
+    assert form["token_type_hint"] == "refresh_token"
+    assert form["client_id"] == CLIENT_ID
+    assert form["client_assertion"]
+
+
+async def test_remove_entry_survives_revocation_failure(hass, entry, aioclient_mock, caplog) -> None:
+    _mock_api(aioclient_mock)
+    _mock_discovery(aioclient_mock)
+    aioclient_mock.post(f"{ISSUER}/token/revocation", status=503, json={"error": "temporarily_unavailable"})
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.config_entries.async_get_entry(entry.entry_id) is None
+    assert "Could not revoke the openfeed refresh token" in caplog.text
+
+
+async def test_remove_entry_without_revocation_endpoint(hass, entry, aioclient_mock) -> None:
+    _mock_api(aioclient_mock)
+    _mock_discovery(aioclient_mock, revocation=False)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.config_entries.async_get_entry(entry.entry_id) is None
+    assert not [c for c in aioclient_mock.mock_calls if c[0] == "POST"]
 
 
 async def test_credit_exhausted_raises_issue(hass, entry, aioclient_mock) -> None:

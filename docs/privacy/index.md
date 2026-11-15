@@ -49,8 +49,11 @@ until you delete them.
 ## How to stop sharing and delete data
 
 1. Revoke the grant in your [openfeed dashboard](https://app.openfeed.au). The
-   integration stops collecting at once, discards cached data and asks you to reconnect.
-2. Delete the integration in Home Assistant to remove tokens, keys and sensors.
+   integration stops collecting at once, discards cached data and tokens, and asks you
+   to reconnect.
+2. Delete the integration in Home Assistant to remove tokens, keys and sensors. The
+   integration also revokes its refresh token at openfeed as it is deleted. The
+   disclosure grant stays listed in openfeed until you revoke it there (step 1).
 3. Delete the `openfeed:` statistics in **Developer tools > Statistics** to remove history.
 
 ## Diagnostics
