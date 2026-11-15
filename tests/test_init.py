@@ -99,7 +99,8 @@ METER_DETAIL = {
 }
 
 
-def _mock_api(aioclient_mock, revoked: bool = False):
+def _mock_api(aioclient_mock, revoked: bool = False, usage_error: bool = False,
+              der_error: bool = False, meters_error: bool = False):
     a = f"{API}/v1/energy/accounts/{ACC}"
     if revoked:
         aioclient_mock.get(f"{API}/v1/energy/accounts", status=403,
@@ -107,7 +108,10 @@ def _mock_api(aioclient_mock, revoked: bool = False):
         return
     aioclient_mock.get(f"{API}/v1/energy/accounts", json={"data": [{"accountId": ACC, "displayName": "Home"}]})
     aioclient_mock.get(f"{a}/balance", json={"data": {"balance": "-123.45", "currency": "AUD"}})
-    aioclient_mock.get(f"{a}/meters", json={"data": [{"meterId": METER, "nationalMeteringId": NMI}]})
+    if meters_error:
+        aioclient_mock.get(f"{a}/meters", status=500, json={"code": "internal"})
+    else:
+        aioclient_mock.get(f"{a}/meters", json={"data": [{"meterId": METER, "nationalMeteringId": NMI}]})
     aioclient_mock.get(f"{a}/invoices", json={"data": [
         {"invoiceNumber": "1", "issueDate": "2026-09-01", "dueDate": "2026-09-15", "invoiceAmount": "100.00", "paymentStatus": "PAID"},
         {"invoiceNumber": "2", "issueDate": "2026-10-01", "dueDate": "2026-10-15", "invoiceAmount": "88.10", "paymentStatus": "NOT_PAID",
@@ -125,8 +129,14 @@ def _mock_api(aioclient_mock, revoked: bool = False):
         {"accountId": ACC, "executionDateTime": "2026-09-03T09:00:00+10:00",
          "transactionUType": "payment", "amount": -100.0},
     ]})
-    aioclient_mock.get(f"{a}/meters/{METER}/der", json={"data": DER})
-    aioclient_mock.get(f"{a}/meters/{METER}/usage", json={"data": _usage_records()})
+    if der_error:
+        aioclient_mock.get(f"{a}/meters/{METER}/der", status=503, json={"code": "unavailable"})
+    else:
+        aioclient_mock.get(f"{a}/meters/{METER}/der", json={"data": DER})
+    if usage_error:
+        aioclient_mock.get(f"{a}/meters/{METER}/usage", status=500, json={"code": "internal"})
+    else:
+        aioclient_mock.get(f"{a}/meters/{METER}/usage", json={"data": _usage_records()})
     aioclient_mock.get(f"{API}/v1/banking/accounts", json={"data": [{"accountId": "B1=", "displayName": "Everyday"}]})
     aioclient_mock.get(f"{API}/v1/banking/accounts/B1=/balance", status=403,
                        json={"code": "balance_unavailable"})
@@ -208,6 +218,76 @@ async def test_setup_creates_sensors_and_statistics(hass, entry, aioclient_mock)
         if str(url).startswith(API):
             assert headers["Authorization"] == "DPoP at"
             assert headers["DPoP"]
+
+
+async def test_usage_failure_on_first_load_keeps_other_entities(hass, entry, aioclient_mock) -> None:
+    """A usage 500 for one meter no longer fails the whole refresh."""
+    _mock_api(aioclient_mock, usage_error=True)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED
+    meter = f"sensor.meter_{NMI.lower()}"
+    assert hass.states.get("sensor.energy_home_plan").state == "Wholesale"
+    assert float(hass.states.get(f"{meter}_der_solar_capacity").state) == 4.0
+    fetched = hass.states.get(f"{meter}_usage_last_fetched")
+    assert fetched.attributes["usage_status"] == "error"
+    assert fetched.attributes["der_status"] == "ok"
+
+
+async def _refresh_with(hass, entry, aioclient_mock, **errors) -> None:
+    """Re-mock the API with errors and run a refresh that re-fetches usage."""
+    coordinator = entry.runtime_data
+    for md in coordinator._usage_cache.values():
+        md.usage_fetched_at = dt_util.utcnow() - timedelta(hours=4)
+    coordinator._meter_detail_cache.clear()
+    aioclient_mock.clear_requests()
+    _mock_api(aioclient_mock, **errors)
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+
+async def test_later_usage_and_der_failures_keep_last_good_data(hass, entry, aioclient_mock) -> None:
+    _mock_api(aioclient_mock)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    meter = f"sensor.meter_{NMI.lower()}"
+    fetched_before = hass.states.get(f"{meter}_usage_last_fetched").state
+
+    await _refresh_with(hass, entry, aioclient_mock, usage_error=True, der_error=True)
+    assert entry.runtime_data.last_update_success
+    assert float(hass.states.get(f"{meter}_latest_day_grid_consumption").state) == 24.0
+    assert float(hass.states.get(f"{meter}_der_solar_capacity").state) == 4.0
+    fetched = hass.states.get(f"{meter}_usage_last_fetched")
+    # The last successful fetch time is kept (the helper backdated it 4 hours).
+    assert dt_util.parse_datetime(fetched.state) == dt_util.parse_datetime(fetched_before) - timedelta(hours=4)
+    assert fetched.attributes["usage_status"] == "error"
+    assert fetched.attributes["der_status"] == "error"
+
+    # The failed usage is retried on the next poll, and recovers.
+    aioclient_mock.clear_requests()
+    _mock_api(aioclient_mock)
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert any("/usage" in str(call[1]) for call in aioclient_mock.mock_calls)
+    assert hass.states.get(f"{meter}_usage_last_fetched").attributes["usage_status"] == "ok"
+
+
+async def test_meters_list_failure_keeps_cached_meters(hass, entry, aioclient_mock) -> None:
+    _mock_api(aioclient_mock)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    await _refresh_with(hass, entry, aioclient_mock, meters_error=True)
+    assert entry.runtime_data.last_update_success
+    meter = f"sensor.meter_{NMI.lower()}"
+    assert float(hass.states.get(f"{meter}_latest_day_grid_consumption").state) == 24.0
+    assert hass.states.get(f"{meter}_usage_last_fetched").attributes["meters_source"] == "cache"
+
+
+async def test_meters_list_failure_without_cache_fails_refresh(hass, entry, aioclient_mock) -> None:
+    _mock_api(aioclient_mock, meters_error=True)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.SETUP_RETRY
 
 
 async def test_revocation_triggers_reauth(hass, entry, aioclient_mock) -> None:
