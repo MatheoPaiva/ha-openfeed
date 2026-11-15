@@ -600,3 +600,49 @@ async def test_rebuild_ignores_earlier_running_sum(hass) -> None:
     await async_wait_recording_done(hass)
     last = await hass.async_add_executor_job(get_last_statistics, hass, 1, stat_id, True, {"sum"})
     assert last[stat_id][0]["sum"] == pytest.approx(14.27)
+
+
+async def test_legacy_entry_keeps_nmi_keys(hass, entry, aioclient_mock) -> None:
+    """Entries made before minor version 2 keep their statistic IDs."""
+    _mock_api(aioclient_mock)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.minor_version == 2
+    assert entry.data["meter_key_scheme"] == "legacy"
+    assert "meter_key_salt" not in entry.data
+    await async_wait_recording_done(hass)
+    ids = {s["statistic_id"] for s in await hass.async_add_executor_job(list_statistic_ids, hass)}
+    assert f"openfeed:nmi_{NMI.lower()}_consumption" in ids
+
+
+async def test_new_entry_keeps_nmi_out_of_ids_and_names(hass, entry, aioclient_mock) -> None:
+    from homeassistant.helpers import device_registry as dr, entity_registry as er
+
+    hass.config_entries.async_update_entry(entry, minor_version=2)
+    _mock_api(aioclient_mock)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    salt = entry.data["meter_key_salt"]
+    assert len(salt) == 32 and "meter_key_scheme" not in entry.data
+    await async_wait_recording_done(hass)
+
+    nmi = NMI.lower()
+    stats = await hass.async_add_executor_job(list_statistic_ids, hass)
+    meter_stats = [s for s in stats if "consumption" in s["statistic_id"]]
+    assert meter_stats
+    for stat in stats:
+        assert nmi not in stat["statistic_id"].lower()
+        assert nmi not in (stat.get("name") or "").lower()
+    for ent in er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id):
+        assert nmi not in ent.entity_id and nmi not in ent.unique_id.lower()
+    for device in dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id):
+        assert all(nmi not in ident.lower() for _, ident in device.identifiers)
+        assert nmi not in (device.name or "").lower()
+        assert nmi not in (device.serial_number or "").lower()
+    for state in hass.states.async_all():
+        assert nmi not in str(state.attributes).lower()
+
+    # The salt never changes once picked.
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.data["meter_key_salt"] == salt

@@ -38,7 +38,7 @@ from .coordinator import (
     latest_day_total,
     period_total,
 )
-from .statistics import account_key
+from .statistics import account_key, meter_label
 from . import tariff
 from .usage import AEST, CONSUMPTION, CONTROLLED_LOAD, EXPORT
 
@@ -516,7 +516,6 @@ def _meter_detail_attrs(m: MeterData) -> dict[str, Any]:
     return {
         "detail_source": m.detail_source,
         "detail_fetched": m.detail_fetched_at.isoformat() if m.detail_fetched_at else None,
-        "national_metering_id": m.meter.get("nationalMeteringId"),
         "status": m.meter.get("status"),
         "read_type": m.meter.get("detectedReadType"),
         "jurisdiction": m.meter.get("jurisdictionCode"),
@@ -791,11 +790,14 @@ class MeterSensor(_Base):
         meter = coordinator.data.energy[account_id].meters[meter_id]
         nmi = meter.meter.get("nationalMeteringId")
         self._attr_unique_id = f"{coordinator.config_entry.unique_id}_{meter.key}_{description.key}"
+        # Legacy entries keep the NMI naming their entity IDs already use. On
+        # newer entries the full NMI is only on the disabled-by-default NMI sensor.
+        legacy = coordinator.meter_salt is None
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, f"meter_{meter.key}")},
-            name=f"Meter {nmi or meter.key}",
+            name=f"Meter {nmi or meter.key}" if legacy else meter_label(meter.meter),
             model=f"Service point ({meter.meter.get('detectedReadType') or 'unknown'} reads)",
-            serial_number=nmi,
+            serial_number=nmi if legacy else None,
             entry_type=DeviceEntryType.SERVICE,
             configuration_url=ENERGY_CONFIG_URL,
         )

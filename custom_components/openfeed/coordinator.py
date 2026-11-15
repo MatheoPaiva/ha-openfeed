@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 import logging
+import secrets
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -28,10 +29,13 @@ from .const import (
     ACCOUNT_DETAIL_REFRESH_HOURS,
     BILLING_REFRESH_HOURS,
     CONF_BACKFILL_DAYS,
+    CONF_METER_KEY_SALT,
+    CONF_METER_KEY_SCHEME,
     CONF_MONEY_STATS_VERSION,
     CONF_SCOPES,
     DEFAULT_BACKFILL_DAYS,
     DOMAIN,
+    METER_KEY_LEGACY,
     MONEY_STATS_VERSION,
     SCOPE_BANKING,
     SCOPE_ENERGY,
@@ -50,6 +54,7 @@ from .statistics import (
     async_import_money,
     async_import_power,
     meter_key,
+    meter_label,
     statistic_id,
 )
 from .usage import AEST, UsageSummary, summarise, usage_windows
@@ -157,6 +162,7 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
             update_interval=timedelta(minutes=UPDATE_INTERVAL_MINUTES),
         )
         self.session = session
+        self._ensure_meter_salt()
         self._usage_cache: dict[str, MeterData] = {}
         self._backfilled: set[str] = set()
         self._money_migrated = False
@@ -168,6 +174,23 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
         self._meter_detail_cache: dict[str, tuple[datetime, dict[str, Any] | None]] = {}
         # account ID -> (fetched at, status, summary)
         self._billing_cache: dict[str, tuple[datetime, str, BillingSummary | None]] = {}
+
+    def _ensure_meter_salt(self) -> None:
+        """Give a new (non-legacy) entry its meter key salt, once, for good."""
+        data = self.config_entry.data
+        if data.get(CONF_METER_KEY_SCHEME) == METER_KEY_LEGACY or data.get(CONF_METER_KEY_SALT):
+            return
+        self.hass.config_entries.async_update_entry(
+            self.config_entry, data={**data, CONF_METER_KEY_SALT: secrets.token_hex(16)}
+        )
+
+    @property
+    def meter_salt(self) -> str | None:
+        """The per-entry salt for meter keys, or None for legacy NMI keys."""
+        data = self.config_entry.data
+        if data.get(CONF_METER_KEY_SCHEME) == METER_KEY_LEGACY:
+            return None
+        return data.get(CONF_METER_KEY_SALT)
 
     @property
     def scopes(self) -> list[str]:
@@ -340,7 +363,7 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
     async def _collect_meter(self, account_id: str, meter: dict[str, Any]) -> MeterData:
         meter_id = meter["meterId"]
         cached = self._usage_cache.get(meter_id)
-        md = MeterData(account_id=account_id, meter=meter, key=meter_key(meter))
+        md = MeterData(account_id=account_id, meter=meter, key=meter_key(meter, self.meter_salt))
         await self._with_meter_detail(md)
         try:
             md.der = await self.session.client.energy_der(account_id, meter_id)
@@ -400,10 +423,10 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
             for day in [d for d in merged if d < cutoff]:
                 del merged[day]
         if summary.hourly:
-            label = f"openfeed {md.meter.get('nationalMeteringId') or md.key}"
+            label = f"openfeed {meter_label(md.meter).lower()}"
             await async_import_meter(self.hass, md.key, label, summary.hourly)
         if summary.hourly_power:
-            label = f"openfeed {md.meter.get('nationalMeteringId') or md.key}"
+            label = f"openfeed {meter_label(md.meter).lower()}"
             await async_import_power(self.hass, md.key, label, summary.hourly_power)
         self._backfilled.add(md.meter["meterId"])
         return summary

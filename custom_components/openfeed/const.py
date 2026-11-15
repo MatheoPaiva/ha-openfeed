@@ -34,6 +34,13 @@ CONF_DPOP_KEY: Final = "dpop_key_pem"
 CONF_TOKEN: Final = "token"
 CONF_GRANT_ID: Final = "grant_id"
 CONF_SUBJECT: Final = "subject"
+# How meters are keyed in statistic IDs, unique IDs and device identifiers.
+# "legacy" (entries made before minor version 2) keeps nmi_<nmi> so existing
+# Energy dashboard sources and history keep working. Newer entries key each
+# meter by an HMAC of the NMI with a random per-entry salt.
+CONF_METER_KEY_SCHEME: Final = "meter_key_scheme"
+CONF_METER_KEY_SALT: Final = "meter_key_salt"
+METER_KEY_LEGACY: Final = "legacy"
 # Bumped when a money statistic changes meaning and must be rebuilt.
 CONF_MONEY_STATS_VERSION: Final = "money_stats_version"
 # 3: v0.1.5 rebuilds payments again; v0.1.4 could carry a stale running sum.

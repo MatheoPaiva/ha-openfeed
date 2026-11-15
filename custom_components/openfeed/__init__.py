@@ -35,6 +35,23 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
+async def async_migrate_entry(hass: HomeAssistant, entry: OpenfeedConfigEntry) -> bool:
+    """Migrate an older config entry."""
+    from .const import CONF_METER_KEY_SCHEME, METER_KEY_LEGACY
+
+    if entry.version > 1:
+        return False
+    if entry.minor_version < 2:
+        # Keep the nmi_<nmi> meter keys and names this entry's statistics,
+        # unique IDs, entity IDs and Energy dashboard sources already use.
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, CONF_METER_KEY_SCHEME: METER_KEY_LEGACY},
+            minor_version=2,
+        )
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: OpenfeedConfigEntry) -> bool:
     """Set up openfeed from a config entry."""
     async_register_views(hass)

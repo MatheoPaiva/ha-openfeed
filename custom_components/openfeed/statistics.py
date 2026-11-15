@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import hashlib
+import hmac
 import logging
 import re
 
@@ -58,17 +59,34 @@ MONEY_NAMES = {
 }
 
 
-def meter_key(meter: dict) -> str:
+def meter_key(meter: dict, salt: str | None = None) -> str:
     """A stable, statistic-safe key for a meter.
 
-    The NMI when present (it is stable across retailers), otherwise a short
-    hash of the provider-scoped meter ID.
+    With a salt (entries at config minor version 2 or later), an HMAC-SHA256 of the NMI, or of
+    the provider-scoped meter ID when no NMI is shared, keyed by the entry's
+    random salt. The NMI never appears in statistic IDs, unique IDs, device
+    identifiers or entity IDs, and the salt stops a reader of the IDs from
+    testing candidate NMIs.
+
+    Without a salt (entries made before that), the legacy key: nmi_<nmi> when
+    present, otherwise a short hash of the meter ID. It is kept so existing
+    statistics and Energy dashboard sources keep working.
     """
     nmi = str(meter.get("nationalMeteringId") or "").lower()
+    if salt:
+        source = nmi or f"id:{meter.get('meterId')}"
+        digest = hmac.new(salt.encode(), source.encode(), hashlib.sha256).hexdigest()[:12]
+        return f"meter_{digest}"
     if re.fullmatch(r"[a-z0-9]{10,11}", nmi):
         return f"nmi_{nmi}"
     digest = hashlib.sha256(str(meter.get("meterId")).encode()).hexdigest()[:12]
     return f"meter_{digest}"
+
+
+def meter_label(meter: dict) -> str:
+    """A display name for a meter that does not carry the full NMI."""
+    nmi = str(meter.get("nationalMeteringId") or "")
+    return f"Meter ending {nmi[-4:].upper()}" if len(nmi) >= 4 else "Meter"
 
 
 def account_key(account_id: str) -> str:

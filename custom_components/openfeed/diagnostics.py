@@ -26,6 +26,7 @@ TO_REDACT = {
     "servicePointId",
     "invoiceNumber",
     "grant_id",
+    "meter_key_salt",
     "client_id",
     "app_id",
     # Nested identifiers and free text that can identify a person or site.
