@@ -138,21 +138,23 @@ async def test_full_flow_with_consent(hass: HomeAssistant, openfeed, aioclient_m
     assert not hass.data[PENDING_KEY]
 
 
-async def test_state_mismatch_aborts(hass: HomeAssistant, openfeed) -> None:
+async def test_state_mismatch_returns_to_form(hass: HomeAssistant, openfeed) -> None:
     result = await _start(hass)
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"code": "c1", "iss": ISSUER, "state": "forged"})
     result = await hass.config_entries.flow.async_configure(result["flow_id"])
-    assert result == result | {"type": FlowResultType.ABORT, "reason": "state_mismatch"}
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert result["errors"] == {"base": "state_mismatch"}
 
 
-async def test_issuer_mismatch_aborts(hass: HomeAssistant, openfeed) -> None:
+async def test_issuer_mismatch_returns_to_form(hass: HomeAssistant, openfeed) -> None:
     result = await _start(hass)
     state = _pending_state(hass, "auth")
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"code": "c1", "iss": "https://evil.example", "state": state})
     result = await hass.config_entries.flow.async_configure(result["flow_id"])
-    assert result["reason"] == "issuer_mismatch"
+    assert result["errors"] == {"base": "issuer_mismatch"}
 
 
 async def test_consent_declined(hass: HomeAssistant, openfeed) -> None:
@@ -165,7 +167,7 @@ async def test_consent_declined(hass: HomeAssistant, openfeed) -> None:
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"consented": "false", "reason": "user_cancelled"})
     result = await hass.config_entries.flow.async_configure(result["flow_id"])
-    assert result["reason"] == "consent_declined"
+    assert result["errors"] == {"base": "consent_declined"}
 
 
 async def test_invalid_ids_show_errors(hass: HomeAssistant, openfeed) -> None:
@@ -276,3 +278,69 @@ async def test_reconfigure_refuses_plain_http(hass: HomeAssistant, openfeed, key
         result["flow_id"], {"include_banking": False, "redirect_base": "http://10.0.0.5:8123"})
     assert result["errors"] == {"redirect_base": "insecure_url"}
     assert "allow_insecure_redirect" in result["data_schema"].schema
+
+
+
+def _jwks(result) -> str:
+    return result["description_placeholders"]["jwks"]
+
+
+async def test_retry_after_failure_keeps_keys_and_values(hass: HomeAssistant, openfeed) -> None:
+    """A failed sign-in returns to the form with the same JWKS and the values entered."""
+    openfeed["tokens"] = [
+        {"access_token": "a1", "refresh_token": "r1", "expires_in": 600, "id_token": "SIGN",
+         "authorization_details": [{"type": "disclosure_grant_v1", "grant_id": "g-1"}]},
+    ]
+    first = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await _start(hass)
+    flow_id = result["flow_id"]
+    result = await hass.config_entries.flow.async_configure(
+        flow_id, {"error": "access_denied", "state": _pending_state(hass, "auth")})
+    result = await hass.config_entries.flow.async_configure(flow_id)
+    assert result["errors"] == {"base": "access_denied"}
+    assert _jwks(result) == _jwks(first)
+    assert result["description_placeholders"]["kid"] in _jwks(result)
+    # The form comes back with what the user typed.
+    suggested = {str(k): k.description for k in result["data_schema"].schema}
+    assert suggested["client_id"] == {"suggested_value": CLIENT_ID}
+    # The second attempt completes with the same keys.
+    result = await hass.config_entries.flow.async_configure(
+        flow_id, {"client_id": CLIENT_ID, "app_id": APP_ID, "redirect_base": "https://ha.example",
+                  "include_banking": False})
+    assert result["type"] is FlowResultType.EXTERNAL_STEP
+    result = await hass.config_entries.flow.async_configure(
+        flow_id, {"code": "c1", "iss": ISSUER, "state": _pending_state(hass, "auth")})
+    result = await hass.config_entries.flow.async_configure(flow_id)
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+
+async def test_new_flow_reuses_unfinished_keys(hass: HomeAssistant, openfeed, hass_storage) -> None:
+    """Closing the dialog and starting again keeps the JWKS already pasted into openfeed."""
+    first = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    hass.config_entries.flow.async_abort(first["flow_id"])
+    second = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    assert _jwks(second) == _jwks(first)
+    assert "openfeed.pending_keys" in hass_storage
+
+
+async def test_keys_forgotten_after_entry_created(hass: HomeAssistant, openfeed, hass_storage) -> None:
+    openfeed["tokens"] = [
+        {"access_token": "a1", "refresh_token": "r1", "expires_in": 600, "id_token": "SIGN",
+         "authorization_details": [{"type": "disclosure_grant_v1", "grant_id": "g-1"}]},
+    ]
+    result = await _start(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"code": "c1", "iss": ISSUER, "state": _pending_state(hass, "auth")})
+    result = await hass.config_entries.flow.async_configure(result["flow_id"])
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    assert "openfeed.pending_keys" not in hass_storage
+
+
+async def test_par_failure_returns_to_form(hass: HomeAssistant, openfeed, aioclient_mock) -> None:
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(f"{ISSUER}/.well-known/openid-configuration", json=DISCOVERY)
+    aioclient_mock.post(f"{ISSUER}/request", status=401, json={"error": "invalid_client"})
+    result = await _start(hass)
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "invalid_client"}

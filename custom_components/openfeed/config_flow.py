@@ -30,13 +30,15 @@ import voluptuous as vol
 from homeassistant.config_entries import (
     SOURCE_REAUTH,
     SOURCE_RECONFIGURE,
+    SOURCE_USER,
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
     OptionsFlow,
 )
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.network import NoURLAvailableError, get_url
+from homeassistant.helpers.storage import Store
 
 from .const import (
     CALLBACK_PATH,
@@ -60,13 +62,22 @@ from .const import (
     DEFAULT_ISSUER,
     DOMAIN,
     MAX_BACKFILL_DAYS,
+    PENDING_KEYS_STORAGE,
     REGISTER_URL,
     SCOPE_BANKING,
     SCOPE_ENERGY,
     SCOPE_OFFLINE,
     SCOPE_OPENID,
 )
-from .crypto import generate_private_key_pem, load_private_key, pkce_pair, public_jwks, random_token
+from .crypto import (
+    generate_private_key_pem,
+    jwk_thumbprint,
+    load_private_key,
+    pkce_pair,
+    public_jwk,
+    public_jwks,
+    random_token,
+)
 from .oauth import OpenfeedAuthError, TokenSet
 from .session import build_auth
 from .views import async_register_views, discard_pending, register_pending
@@ -75,6 +86,43 @@ _LOGGER = logging.getLogger(__name__)
 
 _CLIENT_ID_RE = re.compile(r"^app-[0-9a-fA-F-]{36}$")
 _APP_ID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
+
+
+# Failures that leave the generated keys valid: the user step is shown again
+# with the error, so the next attempt reuses the JWKS already in openfeed.
+RETRYABLE = frozenset(
+    {
+        "invalid_client",
+        "invalid_scope",
+        "par_failed",
+        "access_denied",
+        "auth_error",
+        "state_mismatch",
+        "issuer_mismatch",
+        "no_refresh_token",
+        "token_failed",
+        "consent_declined",
+        "grant_mismatch",
+    }
+)
+
+
+def _key_store(hass: HomeAssistant) -> Store[dict[str, str]]:
+    return Store(hass, 1, PENDING_KEYS_STORAGE, private=True)
+
+
+async def _async_setup_keys(hass: HomeAssistant) -> dict[str, str]:
+    """The keypairs for a new setup: the unfinished setup's, else fresh ones."""
+    store = _key_store(hass)
+    saved = await store.async_load()
+    if saved and saved.get(CONF_APP_KEY) and saved.get(CONF_DPOP_KEY):
+        return {CONF_APP_KEY: saved[CONF_APP_KEY], CONF_DPOP_KEY: saved[CONF_DPOP_KEY]}
+    app_pem, dpop_pem = await hass.async_add_executor_job(
+        lambda: (generate_private_key_pem(), generate_private_key_pem())
+    )
+    keys = {CONF_APP_KEY: app_pem, CONF_DPOP_KEY: dpop_pem}
+    await store.async_save(keys)
+    return keys
 
 
 def _is_loopback(host: str) -> bool:
@@ -131,6 +179,9 @@ class OpenfeedConfigFlow(ConfigFlow, domain=DOMAIN):
         self._grant_action = "create"
         # Show the "allow plain http" box once a plain http URL was refused.
         self._offer_http = False
+        # A sign-in failure to show on the user step, and its detail.
+        self._retry_error: str | None = None
+        self._retry_detail = ""
 
     @staticmethod
     @callback
@@ -149,13 +200,13 @@ class OpenfeedConfigFlow(ConfigFlow, domain=DOMAIN):
         """Show the JWKS and collect the registered app's IDs."""
         async_register_views(self.hass)
         if CONF_APP_KEY not in self._data:
-            app_pem, dpop_pem = await self.hass.async_add_executor_job(
-                lambda: (generate_private_key_pem(), generate_private_key_pem())
-            )
-            self._data.update({CONF_APP_KEY: app_pem, CONF_DPOP_KEY: dpop_pem})
+            self._data.update(await _async_setup_keys(self.hass))
 
         errors: dict[str, str] = {}
-        if user_input is not None:
+        if self._retry_error:
+            errors["base"] = self._retry_error
+            self._retry_error = None
+        elif user_input is not None:
             client_id = user_input[CONF_CLIENT_ID].strip()
             app_id = user_input[CONF_APP_ID].strip()
             base = user_input[CONF_REDIRECT_BASE].strip().rstrip("/")
@@ -178,7 +229,16 @@ class OpenfeedConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
                 return await self.async_step_authorize()
 
-        jwks = public_jwks(load_private_key(self._data[CONF_APP_KEY]))
+        app_key = load_private_key(self._data[CONF_APP_KEY])
+        jwks = public_jwks(app_key)
+        # Prefill what the user entered last time when returning after a failure.
+        if user_input is None and CONF_CLIENT_ID in self._data:
+            user_input = {
+                CONF_CLIENT_ID: self._data[CONF_CLIENT_ID],
+                CONF_APP_ID: self._data[CONF_APP_ID],
+                CONF_REDIRECT_BASE: self._data[CONF_REDIRECT_BASE],
+                CONF_INCLUDE_BANKING: SCOPE_BANKING in self._data.get(CONF_SCOPES, []),
+            }
         fields: dict[Any, Any] = {
             vol.Required(CONF_CLIENT_ID): str,
             vol.Required(CONF_APP_ID): str,
@@ -196,6 +256,8 @@ class OpenfeedConfigFlow(ConfigFlow, domain=DOMAIN):
             description_placeholders={
                 "register_url": REGISTER_URL,
                 "jwks": json.dumps(jwks),
+                "kid": jwk_thumbprint(public_jwk(app_key)),
+                "error": self._retry_detail,
             },
             errors=errors,
         )
@@ -236,6 +298,8 @@ class OpenfeedConfigFlow(ConfigFlow, domain=DOMAIN):
                 reason = "invalid_client" if err.error == "invalid_client" else "par_failed"
                 if err.error == "invalid_scope":
                     reason = "invalid_scope"
+                if self.source == SOURCE_USER:
+                    return await self._async_retry(reason, str(err))
                 return self.async_abort(reason=reason, description_placeholders={"error": str(err)})
             return self.async_external_step(step_id="authorize", url=url)
 
@@ -307,7 +371,18 @@ class OpenfeedConfigFlow(ConfigFlow, domain=DOMAIN):
     # Step 4 ----------------------------------------------------------------
 
     async def async_step_failed(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        return self.async_abort(reason=self._failure or "auth_error")
+        reason = self._failure or "auth_error"
+        if self.source == SOURCE_USER and reason in RETRYABLE:
+            return await self._async_retry(reason)
+        return self.async_abort(reason=reason)
+
+    async def _async_retry(self, reason: str, detail: str = "") -> ConfigFlowResult:
+        """Show the user step again with the error, keeping the same keys."""
+        self._retry_error = reason
+        self._retry_detail = detail
+        self._tokens = None
+        self._subject = None
+        return await self.async_step_user()
 
     async def async_step_finish(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Create or update the entry."""
@@ -331,6 +406,8 @@ class OpenfeedConfigFlow(ConfigFlow, domain=DOMAIN):
 
         await self.async_set_unique_id(unique_id)
         self._abort_if_unique_id_configured()
+        # The keys now live in the entry; the next setup starts with new ones.
+        await _key_store(self.hass).async_remove()
         return self.async_create_entry(title="openfeed CDR", data=data)
 
     # Reauth and reconfigure --------------------------------------------------
