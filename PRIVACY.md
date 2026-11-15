@@ -52,7 +52,8 @@ until you delete them.
 ## Diagnostics
 
 Home Assistant diagnostics for the integration redact tokens, keys, account numbers,
-names, NMIs, meter IDs and equipment identifiers. Check a diagnostics file before you
+names, authorised contacts, the service point address, your Home Assistant URL, NMIs,
+meter IDs and equipment identifiers. Check a diagnostics file before you
 share it.
 
 ## Contact
