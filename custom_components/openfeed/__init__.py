@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import secrets
+
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
-from .const import CONF_GRANT_ID, DOMAIN
+from .const import (
+    CONF_GRANT_ID,
+    CONF_METER_KEY_SALT,
+    CONF_METER_KEY_SCHEME,
+    DOMAIN,
+    METER_KEY_LEGACY,
+)
 from .dashboard import async_register_dashboard, async_remove_dashboard, wants_dashboard
 from .coordinator import OpenfeedConfigEntry, OpenfeedCoordinator
 from .session import OpenfeedSession
@@ -25,9 +33,31 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
+async def async_migrate_entry(hass: HomeAssistant, entry: OpenfeedConfigEntry) -> bool:
+    """Migrate an older config entry."""
+    if entry.version > 1:
+        return False
+    if entry.minor_version < 2:
+        # Keep the nmi_<nmi> meter keys this entry's statistics, unique IDs
+        # and Energy dashboard sources already use.
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, CONF_METER_KEY_SCHEME: METER_KEY_LEGACY},
+            minor_version=2,
+        )
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: OpenfeedConfigEntry) -> bool:
     """Set up openfeed from a config entry."""
     async_register_views(hass)
+    if entry.data.get(CONF_METER_KEY_SCHEME) != METER_KEY_LEGACY and not entry.data.get(
+        CONF_METER_KEY_SALT
+    ):
+        # A new entry: pick the salt once; it must never change afterwards.
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, CONF_METER_KEY_SALT: secrets.token_hex(16)}
+        )
     if not entry.data.get(CONF_GRANT_ID):
         raise ConfigEntryAuthFailed("No openfeed disclosure grant; reconnect to share data")
     session = OpenfeedSession(hass, entry)

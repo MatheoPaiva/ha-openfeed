@@ -86,6 +86,8 @@ class OpenfeedConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle an openfeed config flow."""
 
     VERSION = 1
+    # 2: meters are keyed by a salted hash, not the NMI (see async_migrate_entry).
+    MINOR_VERSION = 2
 
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
