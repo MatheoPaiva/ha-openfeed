@@ -223,3 +223,56 @@ async def test_reconfigure_changes_redirect_url(hass: HomeAssistant, openfeed, k
     assert result["type"] is FlowResultType.EXTERNAL_STEP
     assert openfeed["par"]["redirect_uri"] == "https://abc123.ui.nabu.casa/api/openfeed/callback"
     assert openfeed["par"]["grant_management_action"] == "replace"
+
+
+@pytest.mark.parametrize(
+    ("base", "allow", "expected"),
+    [
+        ("https://ha.example", False, None),
+        ("http://localhost:8123", False, None),
+        ("http://127.0.0.1:8123", False, None),
+        ("http://[::1]:8123", False, None),
+        ("http://homeassistant.local:8123", False, "insecure_url"),
+        ("http://192.168.1.10:8123", False, "insecure_url"),
+        ("http://homeassistant.local:8123", True, None),
+        ("ftp://ha.example", True, "invalid_url"),
+        ("https://", False, "invalid_url"),
+        ("ha.local", False, "invalid_url"),
+    ],
+)
+def test_redirect_error(base, allow, expected) -> None:
+    from custom_components.openfeed.config_flow import redirect_error
+
+    assert redirect_error(base, allow) == expected
+
+
+async def test_plain_http_needs_explicit_opt_in(hass: HomeAssistant, openfeed, caplog) -> None:
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    assert "allow_insecure_redirect" not in result["data_schema"].schema
+    user = {"client_id": CLIENT_ID, "app_id": APP_ID, "redirect_base": "http://homeassistant.local:8123",
+            "include_banking": False}
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], user)
+    assert result["errors"] == {"redirect_base": "insecure_url"}
+    # The opt-in box appears only after a plain http URL was refused.
+    assert "allow_insecure_redirect" in result["data_schema"].schema
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {**user, "allow_insecure_redirect": True})
+    assert result["type"] is FlowResultType.EXTERNAL_STEP
+    assert openfeed["par"]["redirect_uri"] == "http://homeassistant.local:8123/api/openfeed/callback"
+    assert "plain http:// URL" in caplog.text
+
+
+async def test_reconfigure_refuses_plain_http(hass: HomeAssistant, openfeed, key_pems) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN, unique_id=f"{CLIENT_ID}_user-1",
+        data={"client_id": CLIENT_ID, "app_id": APP_ID, "redirect_base": "https://ha.example",
+              "issuer": ISSUER, "scopes": ["openid", "offline_access", "energy"],
+              "app_key_pem": key_pems[0], "dpop_key_pem": key_pems[1], "grant_id": "g-1",
+              "token": {"access_token": "old", "refresh_token": "old", "expires_at": 0}},
+    )
+    entry.add_to_hass(hass)
+    result = await entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"include_banking": False, "redirect_base": "http://10.0.0.5:8123"})
+    assert result["errors"] == {"redirect_base": "insecure_url"}
+    assert "allow_insecure_redirect" in result["data_schema"].schema

@@ -238,8 +238,14 @@ local address only.
 |---|---|
 | Anywhere, with Nabu Casa | Your Nabu Casa remote URL, `https://<id>.ui.nabu.casa` |
 | Anywhere, with your own domain | Your domain, for example `https://ha.example.com` |
-| A browser on your home network | Your local URL, for example `http://homeassistant.local:8123` |
+| A browser on your home network | An https local URL if you have one. A plain `http://homeassistant.local:8123` URL needs **Allow a plain http:// URL** ticked (see below) |
 | The Home Assistant Companion app | A URL that works away from home, usually the Nabu Casa remote URL |
+
+**Plain http.** The sign-in code and the consent return travel in the URL. FAPI 2.0
+requires https redirects except for loopback, so the form refuses a plain `http://`
+address other than `localhost` or `127.0.0.1` until you tick **Allow a plain http:// URL**.
+PKCE and DPoP stop a sniffed code being used elsewhere, but https is still the safer
+choice. Each sign-in to a plain http URL logs a warning.
 
 The URL is saved with the entry and only used again for reauth and reconfigure. If you
 change how you reach Home Assistant, update it with **Reconfigure**.
