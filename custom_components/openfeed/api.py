@@ -162,6 +162,11 @@ class OpenfeedClient:
     async def energy_meters(self, account_id: str) -> list[dict[str, Any]]:
         return await self.get_collection(f"/v1/energy/accounts/{path_segment(account_id)}/meters")
 
+    async def energy_meter(self, account_id: str, meter_id: str) -> dict[str, Any]:
+        return await self.get(
+            f"/v1/energy/accounts/{path_segment(account_id)}/meters/{path_segment(meter_id)}"
+        )
+
     async def energy_usage(
         self, account_id: str, meter_id: str, oldest: str, newest: str
     ) -> list[dict[str, Any]]:

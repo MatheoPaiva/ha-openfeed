@@ -61,6 +61,22 @@ def _account_cards(hass: HomeAssistant, entry: Any, account_id: str, account: An
         ),
     )
     cards += _card(
+        "Plan tariff",
+        _rows(
+            registry,
+            base,
+            [
+                ("plan", "Plan"),
+                ("tariff_import_rate", "Import rate (inc GST)"),
+                ("tariff_period", "Tariff period"),
+                ("tariff_feed_in_rate", "Feed-in rate"),
+                ("tariff_daily_supply_charge", "Daily supply charge (inc GST)"),
+                ("tariff_demand_charge", "Demand charge (inc GST)"),
+                ("tariff_next_change", "Next change"),
+            ],
+        ),
+    )
+    cards += _card(
         "Charges and credits",
         _rows(
             registry,
@@ -194,6 +210,20 @@ def _meter_cards(hass: HomeAssistant, entry: Any, meter: Any) -> list[dict]:
                 ("der_register_issues", "Register issues"),
                 ("usage_history_days", "Days of usage history"),
                 ("usage_fetched", "Usage last fetched"),
+            ],
+        ),
+    )
+    cards += _card(
+        "Meter",
+        _rows(
+            registry,
+            base,
+            [
+                ("meter_status", "Status"),
+                ("meter_read_type", "Read type"),
+                ("meter_jurisdiction", "Jurisdiction"),
+                ("meter_classification", "Classification"),
+                ("meter_generator", "Generator"),
             ],
         ),
     )

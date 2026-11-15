@@ -64,6 +64,7 @@ async def async_get_config_entry_diagnostics(
                         "interval_minutes": usage.interval_minutes,
                     },
                     "usage_fetched_at": str(meter.usage_fetched_at),
+                    "meter_detail_source": meter.detail_source,
                 }
             )
         b = account.billing
@@ -72,6 +73,7 @@ async def async_get_config_entry_diagnostics(
             "balance_status": account.balance_status,
             "latest_invoice": account.latest_invoice,
             "plan_shared": account.plan is not None,
+            "tariff_detail_shared": bool((account.plan or {}).get("planDetail")),
             "history": {
                 "invoices": account.invoice_count,
                 "oldest_invoice": str(b.oldest_invoice) if b else None,

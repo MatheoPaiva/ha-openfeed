@@ -162,6 +162,54 @@
       },
       "last_refund": {
         "name": "Last refund"
+      },
+      "tariff_import_rate": {
+        "name": "Import rate"
+      },
+      "tariff_period": {
+        "name": "Tariff period",
+        "state": {
+          "single_rate": "Single rate",
+          "peak": "Peak",
+          "off_peak": "Off-peak",
+          "shoulder": "Shoulder",
+          "shoulder1": "Shoulder 1",
+          "shoulder2": "Shoulder 2"
+        }
+      },
+      "tariff_feed_in_rate": {
+        "name": "Feed-in rate"
+      },
+      "tariff_daily_supply_charge": {
+        "name": "Daily supply charge"
+      },
+      "tariff_demand_charge": {
+        "name": "Demand charge"
+      },
+      "tariff_next_change": {
+        "name": "Next tariff change"
+      },
+      "meter_status": {
+        "name": "Meter status"
+      },
+      "meter_read_type": {
+        "name": "Meter read type"
+      },
+      "meter_jurisdiction": {
+        "name": "Jurisdiction"
+      },
+      "meter_classification": {
+        "name": "Service point classification"
+      },
+      "meter_generator": {
+        "name": "Generator",
+        "state": {
+          "yes": "Yes",
+          "no": "No"
+        }
+      },
+      "meter_nmi": {
+        "name": "NMI"
       }
     },
     "calendar": {

@@ -78,6 +78,27 @@ DER = {
 }
 
 
+PLAN_DETAIL = {
+    "fuelType": "ELECTRICITY",
+    "fees": [{"type": "LATE_PAYMENT", "term": "FIXED", "amount": "12.00"}],
+    "tariffPeriod": [
+        {"type": "RETAIL_SERVICE", "displayName": "All year", "startDate": "01-01",
+         "endDate": "12-31", "dailySupplyCharges": "1.00", "rateBlockUType": "singleRate",
+         "singleRate": {"displayName": "Anytime", "rates": [{"unitPrice": "0.30"}]}},
+    ],
+    "solarFeedInTariff": [
+        {"displayName": "Standard FiT", "payerType": "RETAILER", "tariffUType": "singleTariff",
+         "singleTariff": {"amount": "0.05"}},
+    ],
+}
+
+METER_DETAIL = {
+    "meterId": METER, "nationalMeteringId": NMI, "status": "ACTIVE",
+    "detectedReadType": "interval", "jurisdictionCode": "QLD",
+    "servicePointClassification": "SMALL", "isGenerator": True,
+}
+
+
 def _mock_api(aioclient_mock, revoked: bool = False):
     a = f"{API}/v1/energy/accounts/{ACC}"
     if revoked:
@@ -93,7 +114,9 @@ def _mock_api(aioclient_mock, revoked: bool = False):
          "meterIds": [METER]},
     ]})
     aioclient_mock.get(a, json={"data": {"accountId": ACC, "plans": [
-        {"planOverview": {"displayName": "Wholesale", "startDate": "2026-01-01"}}]}})
+        {"planOverview": {"displayName": "Wholesale", "startDate": "2026-01-01"},
+         "planDetail": PLAN_DETAIL}]}})
+    aioclient_mock.get(f"{a}/meters/{METER}", json={"data": METER_DETAIL})
     aioclient_mock.get(f"{a}/billing", json={"data": [
         {"accountId": ACC, "executionDateTime": f"{dt_util.now(AEST).date().replace(day=1).isoformat()}T09:00:00+10:00",
          "transactionUType": "usage", "amount": 12.5, "description": "Usage"},
@@ -234,6 +257,64 @@ async def test_plan_sensor_removed_when_no_plan(hass, entry, aioclient_mock) -> 
     await hass.async_block_till_done()
     assert registry.async_get(old.entity_id) is None
     assert hass.states.get("sensor.energy_home_month_to_date_charges") is not None
+    assert hass.states.get("sensor.energy_home_import_rate") is None
+    assert hass.states.get("sensor.energy_home_feed_in_rate") is None
+
+
+async def test_tariff_sensors(hass, entry, aioclient_mock) -> None:
+    _mock_api(aioclient_mock)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    rate = hass.states.get("sensor.energy_home_import_rate")
+    assert float(rate.state) == pytest.approx(0.33)
+    assert rate.attributes["unit_of_measurement"] == "AUD/kWh"
+    assert rate.attributes["rate_ex_gst"] == 0.30
+    assert hass.states.get("sensor.energy_home_tariff_period").state == "single_rate"
+    fit = hass.states.get("sensor.energy_home_feed_in_rate")
+    assert float(fit.state) == 0.05
+    assert fit.attributes["tariffs"][0]["payer"] == "RETAILER"
+    supply = hass.states.get("sensor.energy_home_daily_supply_charge")
+    assert float(supply.state) == pytest.approx(1.10)
+    assert supply.attributes["unit_of_measurement"] == "AUD/d"
+    assert hass.states.get("sensor.energy_home_demand_charge") is None
+    # A flat plan never changes within the horizon.
+    assert hass.states.get("sensor.energy_home_next_tariff_change").state == "unknown"
+    plan = hass.states.get("sensor.energy_home_plan")
+    assert plan.attributes["fees"][0]["type"] == "LATE_PAYMENT"
+
+
+async def test_meter_detail_sensors(hass, entry, aioclient_mock) -> None:
+    from homeassistant.helpers import entity_registry as er
+
+    _mock_api(aioclient_mock)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    meter = f"sensor.meter_{NMI.lower()}"
+    status = hass.states.get(f"{meter}_meter_status")
+    assert status.state == "active"
+    assert status.attributes["detail_source"] == "detail"
+    assert status.attributes["is_generator"] is True
+    assert hass.states.get(f"{meter}_meter_read_type").state == "interval"
+    assert hass.states.get(f"{meter}_jurisdiction").state == "QLD"
+    assert hass.states.get(f"{meter}_service_point_classification").state == "small"
+    assert hass.states.get(f"{meter}_generator").state == "yes"
+    # The NMI sensor exists but is disabled by default.
+    nmi = er.async_get(hass).async_get(f"{meter}_nmi")
+    assert nmi is not None and nmi.disabled_by is not None
+
+
+async def test_meter_detail_failure_falls_back_to_list(hass, entry, aioclient_mock) -> None:
+    _mock_api(aioclient_mock)
+    url = f"{API}/v1/energy/accounts/{ACC}/meters/{METER}"
+    aioclient_mock._mocks = [m for m in aioclient_mock._mocks if str(m.url) != url]
+    aioclient_mock.get(url, status=500, json={"code": "internal"})
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED
+    meter = f"sensor.meter_{NMI.lower()}"
+    status = hass.states.get(f"{meter}_meter_status")
+    assert status.attributes["detail_source"] == "list"
+    assert hass.states.get(f"{meter}_generator").state == "unknown"
 
 
 def _mock_api_no_plan(aioclient_mock):

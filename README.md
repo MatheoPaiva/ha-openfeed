@@ -9,7 +9,7 @@ bank balances.
 
 | Version | Home Assistant | Status |
 |---|---|---|
-| 0.1.6 | 2026.4 or later | Current: sidebar dashboard, payments and refunds split |
+| 0.1.7 | 2026.4 or later | Current: plan tariff sensors, meter detail sensors |
 | 0.1.0 | 2026.4 or later | First release |
 
 ## How it works
@@ -41,7 +41,14 @@ data and asks you to reconnect.
 | Latest full day peak import and export | `sensor.meter_<nmi>_latest_day_peak_grid_import`, `_export` (kW, with the interval start) | As above |
 | Account balance | `sensor.energy_<account>_account_balance` | Live, cached up to 15 minutes |
 | Latest invoice amount, due date, status | `sensor.energy_<account>_latest_invoice_*` | Hourly poll |
-| Plan name and tariff detail | `sensor.energy_<account>_plan` (only when the retailer shares a plan) | Daily |
+| Plan name, fees, discounts and incentives | `sensor.energy_<account>_plan` (only when the retailer shares a plan) | Daily |
+| Current import rate | `sensor.energy_<account>_import_rate` (AUD/kWh including GST; rate excluding GST, stepped blocks and network/retail components as attributes) | Re-evaluated every minute from the plan |
+| Time-of-use period | `sensor.energy_<account>_tariff_period` (`single_rate`, `peak`, `off_peak`, `shoulder`, `shoulder1`, `shoulder2`) | Every minute |
+| Feed-in rate | `sensor.energy_<account>_feed_in_rate` (AUD/kWh as published, retailer and government schemes added) | Every minute |
+| Daily supply charge | `sensor.energy_<account>_daily_supply_charge` (AUD/day including GST) | Every minute |
+| Demand charge | `sensor.energy_<account>_demand_charge` (including GST, only on demand tariffs) | Every minute |
+| Next tariff change | `sensor.energy_<account>_next_tariff_change` (timestamp, looks two days ahead) | Every minute |
+| Meter detail | `sensor.meter_<nmi>_meter_status`, `_meter_read_type`, `_jurisdiction`, `_service_point_classification`, `_generator`, and `_nmi` (disabled by default). Every meter detail field is also an attribute of the status sensor | Daily |
 | Month-to-date charges and credits | `sensor.energy_<account>_month_to_date_charges`, `_credits`, with a split by transaction type (only when the retailer shares billing transactions) | Every 6 hours |
 | Billing and invoice history | External statistics `openfeed:acct_<hash>_charges` (gross charges), `_credits` (credits), `_payments` (money you paid), `_refunds` (money paid back to you), `_invoiced` (AUD). All but invoiced are positive amounts | Every 6 hours |
 | Last payment and last refund | `sensor.<account>_last_payment`, `_last_refund` (amount, with date and method). The refund sensor only appears once a refund has been paid | Every 6 hours |
@@ -136,6 +143,27 @@ charges.
 Diagnostics list every billing line (date, type, amount, GST, payment method) without
 descriptions, invoice numbers or meter IDs, so you can check how your retailer reports
 credits and refunds.
+
+### Plan tariff
+
+When the retailer shares a plan with tariff detail, the integration works out which
+rate applies now from the plan's seasonal periods, time-of-use windows, time zone
+(`LOCAL` or `AEST`) and feed-in tariffs. CDR unit prices and supply charges exclude
+GST, so the sensors add 10% and keep the published figure as `rate_ex_gst` or
+`charge_ex_gst`. Feed-in rates are shown as published. Windows that only apply on
+public holidays are ignored, because there is no holiday calendar.
+
+The tariff sensors only appear when the plan carries tariff detail. Some retailers
+share no plan: Amber, for example, returns none, because its prices follow the
+wholesale market. The diagnostics show `tariff_detail_shared`.
+
+### Meter detail
+
+The meter sensors come from openfeed's meter detail endpoint, read once a day: status,
+read type (interval or daily), jurisdiction, service point classification and whether
+the service point is registered as a generator. If that endpoint fails, they fall back
+to the meters list and the status sensor's `detail_source` attribute shows `list`.
+Generator shows unknown when the retailer does not report it.
 
 ### DER register
 

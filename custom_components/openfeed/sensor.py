@@ -19,8 +19,9 @@ from homeassistant.const import (
     UnitOfEnergy,
     UnitOfPower,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -38,6 +39,7 @@ from .coordinator import (
     period_total,
 )
 from .statistics import account_key
+from . import tariff
 from .usage import AEST, CONSUMPTION, CONTROLLED_LOAD, EXPORT
 
 
@@ -65,6 +67,10 @@ class AccountSensorDescription(SensorEntityDescription):
     available_fn: Callable[[EnergyAccountData], bool] = lambda _a: True
     # Only create the entity when this returns True at setup.
     exists_fn: Callable[[EnergyAccountData], bool] = lambda _a: True
+    # Unit as "<currency>/<suffix>", for rates such as AUD/kWh.
+    unit_suffix: str | None = None
+    # Re-evaluate every minute, for values that follow the clock.
+    clock: bool = False
 
 
 def _plan(a: EnergyAccountData) -> dict[str, Any]:
@@ -110,6 +116,145 @@ def _statement_attrs(a: EnergyAccountData) -> dict[str, Any]:
             for s in ("charges", "credits", "payments", "refunds", "invoiced")
         ],
     }
+
+
+def _detail(a: EnergyAccountData) -> dict[str, Any] | None:
+    return (a.plan or {}).get("planDetail") or None
+
+
+def _tariff(a: EnergyAccountData) -> tariff.TariffNow | None:
+    return tariff.evaluate(_detail(a), dt_util.now(), dt_util.get_default_time_zone())
+
+
+def _tariff_value(a: EnergyAccountData, field: str, gst: bool) -> float | None:
+    now = _tariff(a)
+    value = getattr(now, field) if now else None
+    return tariff.inc_gst(value) if gst else value
+
+
+def _import_attrs(a: EnergyAccountData) -> dict[str, Any]:
+    now = _tariff(a)
+    if now is None:
+        return {}
+    return {
+        "rate_ex_gst": now.import_ex_gst,
+        "gst_rate": tariff.GST_RATE,
+        "time_of_use_period": now.import_type,
+        "rate_name": now.import_name,
+        "tariff_periods": now.periods,
+        "blocks": now.import_blocks,
+        "components": now.components,
+        "source": "CDR plan detail (unit prices exclude GST; state includes GST)",
+    }
+
+
+def _supply_attrs(a: EnergyAccountData) -> dict[str, Any]:
+    now = _tariff(a)
+    return {"charge_ex_gst": now.supply_ex_gst, "gst_rate": tariff.GST_RATE} if now else {}
+
+
+def _demand_attrs(a: EnergyAccountData) -> dict[str, Any]:
+    now = _tariff(a)
+    if now is None:
+        return {}
+    return {
+        "charge_ex_gst": now.demand_ex_gst,
+        "measure_unit": now.demand_unit,
+        "charge_name": now.demand_name,
+        **(now.demand_detail or {}),
+    }
+
+
+def _feed_in_attrs(a: EnergyAccountData) -> dict[str, Any]:
+    detail = _detail(a) or {}
+    now = _tariff(a)
+    return {
+        "tariff_name": now.feed_in_name if now else None,
+        "tariffs": [
+            {
+                "name": f.get("displayName"),
+                "scheme": f.get("scheme"),
+                "payer": f.get("payerType"),
+                "type": f.get("tariffUType"),
+            }
+            for f in detail.get("solarFeedInTariff") or []
+        ],
+    }
+
+
+def _tou_value(a: EnergyAccountData) -> str | None:
+    now = _tariff(a)
+    value = now.import_type.lower() if now and now.import_type else None
+    return value if value in TOU_OPTIONS else None
+
+
+def _next_change(a: EnergyAccountData) -> datetime | None:
+    return tariff.next_change(_detail(a), dt_util.now(), dt_util.get_default_time_zone())
+
+
+TOU_OPTIONS = [t.lower() for t in (tariff.SINGLE_RATE, *tariff.TOU_TYPES)]
+
+
+TARIFF_SENSORS: tuple[AccountSensorDescription, ...] = (
+    AccountSensorDescription(
+        key="tariff_import_rate",
+        translation_key="tariff_import_rate",
+        unit_suffix="kWh",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=4,
+        clock=True,
+        value_fn=lambda a: _tariff_value(a, "import_ex_gst", True),
+        attrs_fn=_import_attrs,
+        exists_fn=lambda a: tariff.has_import(_detail(a)),
+    ),
+    AccountSensorDescription(
+        key="tariff_period",
+        translation_key="tariff_period",
+        device_class=SensorDeviceClass.ENUM,
+        options=TOU_OPTIONS,
+        clock=True,
+        value_fn=_tou_value,
+        exists_fn=lambda a: tariff.has_import(_detail(a)),
+    ),
+    AccountSensorDescription(
+        key="tariff_feed_in_rate",
+        translation_key="tariff_feed_in_rate",
+        unit_suffix="kWh",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=4,
+        clock=True,
+        value_fn=lambda a: _tariff_value(a, "feed_in", False),
+        attrs_fn=_feed_in_attrs,
+        exists_fn=lambda a: tariff.has_feed_in(_detail(a)),
+    ),
+    AccountSensorDescription(
+        key="tariff_daily_supply_charge",
+        translation_key="tariff_daily_supply_charge",
+        unit_suffix="d",
+        suggested_display_precision=4,
+        clock=True,
+        value_fn=lambda a: _tariff_value(a, "supply_ex_gst", True),
+        attrs_fn=_supply_attrs,
+        exists_fn=lambda a: tariff.has_supply(_detail(a)),
+    ),
+    AccountSensorDescription(
+        key="tariff_demand_charge",
+        translation_key="tariff_demand_charge",
+        suggested_display_precision=4,
+        clock=True,
+        value_fn=lambda a: _tariff_value(a, "demand_ex_gst", True),
+        attrs_fn=_demand_attrs,
+        exists_fn=lambda a: tariff.has_demand(_detail(a)),
+    ),
+    AccountSensorDescription(
+        key="tariff_next_change",
+        translation_key="tariff_next_change",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        clock=True,
+        value_fn=_next_change,
+        exists_fn=lambda a: tariff.has_import(_detail(a)) or tariff.has_feed_in(_detail(a)),
+    ),
+)
 
 
 ACCOUNT_SENSORS: tuple[AccountSensorDescription, ...] = (
@@ -163,6 +308,10 @@ ACCOUNT_SENSORS: tuple[AccountSensorDescription, ...] = (
         attrs_fn=lambda a: {
             "start_date": _plan(a).get("startDate"),
             "end_date": _plan(a).get("endDate"),
+            "fuel_type": (_detail(a) or {}).get("fuelType"),
+            "fees": (_detail(a) or {}).get("fees"),
+            "discounts": (_detail(a) or {}).get("discounts"),
+            "incentives": (_detail(a) or {}).get("incentives"),
             "plan_detail": (a.plan or {}).get("planDetail"),
         },
         available_fn=lambda a: a.plan is not None,
@@ -358,7 +507,75 @@ def _der(m: MeterData, key: str) -> Any:
     return (m.der or {}).get(key)
 
 
+def _meter_field(m: MeterData, key: str) -> Any:
+    value = m.meter.get(key)
+    return None if value in (None, "") else value
+
+
+def _meter_detail_attrs(m: MeterData) -> dict[str, Any]:
+    return {
+        "detail_source": m.detail_source,
+        "detail_fetched": m.detail_fetched_at.isoformat() if m.detail_fetched_at else None,
+        "national_metering_id": m.meter.get("nationalMeteringId"),
+        "status": m.meter.get("status"),
+        "read_type": m.meter.get("detectedReadType"),
+        "jurisdiction": m.meter.get("jurisdictionCode"),
+        "service_point_classification": m.meter.get("servicePointClassification"),
+        "is_generator": m.meter.get("isGenerator"),
+    }
+
+
+def _generator(m: MeterData) -> str | None:
+    value = m.meter.get("isGenerator")
+    return None if value is None else ("yes" if value else "no")
+
+
+METER_DETAIL_SENSORS: tuple[MeterSensorDescription, ...] = (
+    MeterSensorDescription(
+        key="meter_status",
+        translation_key="meter_status",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda m: (str(_meter_field(m, "status") or "").lower() or None),
+        attrs_fn=_meter_detail_attrs,
+    ),
+    MeterSensorDescription(
+        key="meter_read_type",
+        translation_key="meter_read_type",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda m: _meter_field(m, "detectedReadType"),
+    ),
+    MeterSensorDescription(
+        key="meter_jurisdiction",
+        translation_key="meter_jurisdiction",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda m: _meter_field(m, "jurisdictionCode"),
+    ),
+    MeterSensorDescription(
+        key="meter_classification",
+        translation_key="meter_classification",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda m: (str(_meter_field(m, "servicePointClassification") or "").lower() or None),
+    ),
+    MeterSensorDescription(
+        key="meter_generator",
+        translation_key="meter_generator",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        device_class=SensorDeviceClass.ENUM,
+        options=["yes", "no"],
+        value_fn=_generator,
+    ),
+    MeterSensorDescription(
+        key="meter_nmi",
+        translation_key="meter_nmi",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda m: _meter_field(m, "nationalMeteringId"),
+    ),
+)
+
+
 METER_SENSORS: tuple[MeterSensorDescription, ...] = (
+    *METER_DETAIL_SENSORS,
     _day_sensor(CONSUMPTION),
     _day_sensor(EXPORT),
     _day_sensor(CONTROLLED_LOAD),
@@ -462,7 +679,7 @@ async def async_setup_entry(
     registry = er.async_get(hass)
     stale: list[str] = []
     for account_id, account in data.energy.items():
-        for d in ACCOUNT_SENSORS:
+        for d in (*ACCOUNT_SENSORS, *TARIFF_SENSORS):
             if d.exists_fn(account):
                 entities.append(EnergyAccountSensor(coordinator, account_id, d))
             else:
@@ -518,9 +735,26 @@ class EnergyAccountSensor(_Base):
         self._account_id = account_id
         self._attr_unique_id = f"{coordinator.config_entry.unique_id}_{account_id}_{description.key}"
         self._attr_device_info = energy_device_info(coordinator, account_id)
+        balance = coordinator.data.energy[account_id].balance or {}
+        currency = balance.get("currency") or "AUD"
         if description.device_class == SensorDeviceClass.MONETARY:
-            balance = coordinator.data.energy[account_id].balance or {}
-            self._attr_native_unit_of_measurement = balance.get("currency") or "AUD"
+            self._attr_native_unit_of_measurement = currency
+        elif description.unit_suffix:
+            self._attr_native_unit_of_measurement = f"{currency}/{description.unit_suffix}"
+        elif description.key == "tariff_demand_charge":
+            account = coordinator.data.energy[account_id]
+            now = _tariff(account)
+            unit = (now.demand_unit if now and now.demand_unit else "KVA").replace("KVA", "kVA")
+            self._attr_native_unit_of_measurement = f"{currency}/{unit.replace('KW', 'kW')}"
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if self.entity_description.clock:
+            self.async_on_remove(async_track_time_change(self.hass, self._tick, second=0))
+
+    @callback
+    def _tick(self, _now: datetime) -> None:
+        self.async_write_ha_state()
 
     @property
     def _account(self) -> EnergyAccountData | None:

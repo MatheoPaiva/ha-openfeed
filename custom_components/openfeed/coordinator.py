@@ -69,6 +69,9 @@ class MeterData:
     account_id: str
     meter: dict[str, Any]
     key: str
+    # "detail" when the meter detail endpoint answered, else "list".
+    detail_source: str = "list"
+    detail_fetched_at: datetime | None = None
     der: dict[str, Any] | None = None
     der_summary: DerSummary | None = None
     usage: UsageSummary | None = None
@@ -147,6 +150,8 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
         self._daily_history: dict[str, dict[str, dict[date, float]]] = {}
         # account ID -> (fetched at, plans list or None)
         self._plan_cache: dict[str, tuple[datetime, list[dict[str, Any]] | None]] = {}
+        # meter ID -> (fetched at, meter detail or None)
+        self._meter_detail_cache: dict[str, tuple[datetime, dict[str, Any] | None]] = {}
         # account ID -> (fetched at, status, summary)
         self._billing_cache: dict[str, tuple[datetime, str, BillingSummary | None]] = {}
 
@@ -167,6 +172,7 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
             self._usage_cache.clear()
             self._daily_history.clear()
             self._plan_cache.clear()
+            self._meter_detail_cache.clear()
             self._billing_cache.clear()
             self.session.clear_grant()
             raise ConfigEntryAuthFailed(
@@ -252,6 +258,23 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
             self._plan_cache[account_id] = cached
         return {**account, "plans": cached[1]} if cached[1] else account
 
+    async def _with_meter_detail(self, md: MeterData) -> None:
+        """Merge the meter detail endpoint over the list entry, once a day."""
+        meter_id = md.meter["meterId"]
+        now = dt_util.utcnow()
+        cached = self._meter_detail_cache.get(meter_id)
+        if cached is None or now - cached[0] >= timedelta(hours=ACCOUNT_DETAIL_REFRESH_HOURS):
+            (detail,) = await cancel_on_revocation(
+                [self.session.client.energy_meter(md.account_id, meter_id)]
+            )
+            cached = (now, detail if isinstance(detail, dict) else None)
+            self._meter_detail_cache[meter_id] = cached
+        if cached[1] is not None:
+            extra = {k: v for k, v in cached[1].items() if v is not None}
+            md.meter = {**md.meter, **extra}
+            md.detail_source = "detail"
+            md.detail_fetched_at = cached[0]
+
     async def _apply_billing(
         self, item: EnergyAccountData, invoices: list[dict[str, Any]]
     ) -> None:
@@ -294,6 +317,7 @@ class OpenfeedCoordinator(DataUpdateCoordinator[OpenfeedData]):
         meter_id = meter["meterId"]
         cached = self._usage_cache.get(meter_id)
         md = MeterData(account_id=account_id, meter=meter, key=meter_key(meter))
+        await self._with_meter_detail(md)
         md.der = await self.session.client.energy_der(account_id, meter_id)
         md.der_summary = summarise_der(md.der)
         now = dt_util.utcnow()
