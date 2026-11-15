@@ -2,17 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+
+import aiohttp
+
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
-from .const import CONF_GRANT_ID, DOMAIN
+from .const import CONF_GRANT_ID, CONF_TOKEN, DOMAIN
 from .dashboard import async_register_dashboard, async_remove_dashboard, wants_dashboard
 from .coordinator import OpenfeedConfigEntry, OpenfeedCoordinator
-from .session import OpenfeedSession
+from .oauth import OpenfeedAuthError
+from .session import OpenfeedSession, build_auth
 from .views import async_register_views
+
+_LOGGER = logging.getLogger(__name__)
+
+REVOKE_TIMEOUT_SECONDS = 15
 
 PLATFORMS: list[Platform] = [Platform.CALENDAR, Platform.SENSOR]
 
@@ -60,3 +70,30 @@ async def async_unload_entry(hass: HomeAssistant, entry: OpenfeedConfigEntry) ->
     if not others or not wants_dashboard(hass):
         async_remove_dashboard(hass)
     return unloaded
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: OpenfeedConfigEntry) -> None:
+    """Revoke the refresh token at openfeed when the integration is deleted.
+
+    Best effort: a failure is logged and never blocks removal. The disclosure
+    grant itself stays listed in the openfeed dashboard until the user
+    revokes it there.
+    """
+    refresh_token = (entry.data.get(CONF_TOKEN) or {}).get("refresh_token")
+    if not refresh_token:
+        return
+    try:
+        async with asyncio.timeout(REVOKE_TIMEOUT_SECONDS):
+            revoked = await build_auth(hass, dict(entry.data)).revoke(refresh_token)
+    except (OpenfeedAuthError, aiohttp.ClientError, TimeoutError, ValueError) as err:
+        _LOGGER.warning(
+            "Could not revoke the openfeed refresh token (%s). Revoke the grant in the "
+            "openfeed dashboard to stop sharing",
+            err,
+        )
+        return
+    if revoked:
+        _LOGGER.info(
+            "Revoked the openfeed refresh token. Revoke the disclosure grant in the "
+            "openfeed dashboard to end sharing"
+        )

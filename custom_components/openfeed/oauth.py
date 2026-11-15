@@ -250,6 +250,21 @@ class OpenfeedAuth:
             previous=tokens,
         )
 
+    async def revoke(self, token: str, token_type_hint: str = "refresh_token") -> bool:
+        """Revoke a token at openfeed (RFC 7009). False when not supported.
+
+        Revoking an unknown or already revoked token succeeds (HTTP 200), so
+        this is safe to call more than once.
+        """
+        disc = await self.discover()
+        if not disc.revocation_endpoint:
+            return False
+        form = {**self._client_auth(), "token": token, "token_type_hint": token_type_hint}
+        async with self._session.post(disc.revocation_endpoint, data=form) as resp:
+            if resp.status != 200:
+                raise _auth_error(await _json_or_empty(resp), resp.status)
+        return True
+
     async def _token_request(
         self, form: dict[str, str], previous: TokenSet | None = None
     ) -> TokenSet:
