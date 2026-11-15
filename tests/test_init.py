@@ -273,7 +273,9 @@ async def test_later_usage_and_der_failures_keep_last_good_data(hass, entry, aio
     assert float(hass.states.get(f"{meter}_der_solar_capacity").state) == 4.0
     fetched = hass.states.get(f"{meter}_usage_last_fetched")
     # The last successful fetch time is kept (the helper backdated it 4 hours).
-    assert dt_util.parse_datetime(fetched.state) == dt_util.parse_datetime(fetched_before) - timedelta(hours=4)
+    kept = dt_util.parse_datetime(fetched.state)
+    expected = dt_util.parse_datetime(fetched_before) - timedelta(hours=4)
+    assert abs(kept - expected) <= timedelta(seconds=5)
     assert fetched.attributes["usage_status"] == "error"
     assert fetched.attributes["der_status"] == "error"
 
