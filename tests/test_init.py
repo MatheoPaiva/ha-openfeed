@@ -99,8 +99,18 @@ METER_DETAIL = {
 }
 
 
-def _mock_api(aioclient_mock, revoked: bool = False, usage_error: bool = False,
-              der_error: bool = False, meters_error: bool = False):
+# Personal fields a data holder can return; diagnostics must never carry them.
+PRIVATE_LOCATION = {
+    "addressUType": "simple",
+    "simple": {"addressLine1": "1 Example Street", "city": "Exampleton", "postcode": "4999",
+               "state": "QLD"},
+}
+PRIVATE_CONTACTS = [{"firstName": "Pat", "lastName": "Example", "middleNames": ["Q"],
+                     "title": "Dr"}]
+
+
+def _mock_api(aioclient_mock, revoked: bool = False, private: bool = False,
+              usage_error: bool = False, der_error: bool = False, meters_error: bool = False):
     a = f"{API}/v1/energy/accounts/{ACC}"
     if revoked:
         aioclient_mock.get(f"{API}/v1/energy/accounts", status=403,
@@ -117,10 +127,14 @@ def _mock_api(aioclient_mock, revoked: bool = False, usage_error: bool = False,
         {"invoiceNumber": "2", "issueDate": "2026-10-01", "dueDate": "2026-10-15", "invoiceAmount": "88.10", "paymentStatus": "NOT_PAID",
          "meterIds": [METER]},
     ]})
-    aioclient_mock.get(a, json={"data": {"accountId": ACC, "plans": [
-        {"planOverview": {"displayName": "Wholesale", "startDate": "2026-01-01"},
-         "planDetail": PLAN_DETAIL}]}})
-    aioclient_mock.get(f"{a}/meters/{METER}", json={"data": METER_DETAIL})
+    plan = {"planOverview": {"displayName": "Wholesale", "startDate": "2026-01-01"},
+            "planDetail": PLAN_DETAIL}
+    meter_detail = METER_DETAIL
+    if private:
+        plan = {**plan, "authorisedContacts": PRIVATE_CONTACTS}
+        meter_detail = {**METER_DETAIL, "location": PRIVATE_LOCATION}
+    aioclient_mock.get(a, json={"data": {"accountId": ACC, "plans": [plan]}})
+    aioclient_mock.get(f"{a}/meters/{METER}", json={"data": meter_detail})
     aioclient_mock.get(f"{a}/billing", json={"data": [
         {"accountId": ACC, "executionDateTime": f"{dt_util.now(AEST).date().replace(day=1).isoformat()}T09:00:00+10:00",
          "transactionUType": "usage", "amount": 12.5, "description": "Usage"},
@@ -320,9 +334,25 @@ async def test_diagnostics_redacts(hass, entry, aioclient_mock) -> None:
         assert secret not in text
     lines = diag["energy"]["account_0"]["billing_lines"]
     assert {line["amount"] for line in lines} == {12.5, -4.0, -100.0}
+    assert diag["entry"]["data"]["redirect_base"] == "**REDACTED**"
     totals = diag["energy"]["account_0"]["history"]["series_totals"]
     assert totals["payments"] == 100.0
     assert "refunds" not in totals
+
+
+async def test_diagnostics_redact_address_and_contacts(hass, entry, aioclient_mock) -> None:
+    """The meter detail location and the plan's authorised contacts never leak."""
+    from custom_components.openfeed.diagnostics import async_get_config_entry_diagnostics
+
+    _mock_api(aioclient_mock, private=True)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    text = str(await async_get_config_entry_diagnostics(hass, entry))
+    for secret in ("Example Street", "Exampleton", "4999", "Pat", "'Example'", "https://ha.example"):
+        assert secret not in text
+    # The redacted keys are still visible, so the shape stays useful.
+    assert "'location': '**REDACTED**'" in text
+    assert "'authorisedContacts': '**REDACTED**'" in text
 
 
 async def test_plan_sensor_removed_when_no_plan(hass, entry, aioclient_mock) -> None:

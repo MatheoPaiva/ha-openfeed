@@ -7,7 +7,7 @@ from typing import Any
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_APP_KEY, CONF_DPOP_KEY, CONF_SUBJECT, CONF_TOKEN
+from .const import CONF_APP_KEY, CONF_DPOP_KEY, CONF_REDIRECT_BASE, CONF_SUBJECT, CONF_TOKEN
 from .coordinator import OpenfeedConfigEntry
 
 TO_REDACT = {
@@ -15,6 +15,7 @@ TO_REDACT = {
     CONF_DPOP_KEY,
     CONF_TOKEN,
     CONF_SUBJECT,
+    CONF_REDIRECT_BASE,
     "access_token",
     "refresh_token",
     "accountNumber",
@@ -33,6 +34,25 @@ TO_REDACT = {
     "deviceIdentifier",
     "displayName",
     "description",
+    # The service point address in the meter detail (CDR location), and any
+    # other address a data holder adds.
+    "location",
+    "address",
+    "addressLine1",
+    "addressLine2",
+    "addressLine3",
+    "postcode",
+    "mailingAddress",
+    "physicalAddress",
+    "simple",
+    "paf",
+    # People on the account (CDR plans[].authorisedContacts).
+    "authorisedContacts",
+    "firstName",
+    "lastName",
+    "middleNames",
+    "prefix",
+    "suffix",
 }
 
 
