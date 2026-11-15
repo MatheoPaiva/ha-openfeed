@@ -114,3 +114,42 @@ async def test_other_errors_returned_in_place():
     result = await api.cancel_on_revocation([ok(), bad()])
     assert result[0] == 1
     assert isinstance(result[1], api.BalanceUnavailableError)
+
+
+async def test_next_link_off_origin_refused(fake_server, dpop_key):
+    fake_server.add("GET", "/v1/energy/accounts",
+                    json={"data": [{"accountId": "1"}], "links": {"next": "https://elsewhere.example/steal"}})
+    async with aiohttp.ClientSession() as session:
+        with pytest.raises(api.OpenfeedApiError) as err:
+            await _client(session, dpop_key, fake_server.url).energy_accounts()
+    assert err.value.code == "invalid_next_link"
+    assert len(fake_server.requests) == 1
+
+
+async def test_relative_next_link_followed(fake_server, dpop_key):
+    fake_server.add("GET", "/v1/energy/accounts",
+                    json={"data": [{"accountId": "1"}], "links": {"next": "/v1/energy/accounts?page=2"}})
+    fake_server.add("GET", "/v1/energy/accounts", json={"data": [{"accountId": "2"}]})
+    async with aiohttp.ClientSession() as session:
+        items = await _client(session, dpop_key, fake_server.url).energy_accounts()
+    assert [i["accountId"] for i in items] == ["1", "2"]
+    assert fake_server.requests[1]["query"] == {"page": "2"}
+
+
+async def test_repeating_next_link_stops(fake_server, dpop_key):
+    base = fake_server.url
+    loop = f"{base}/v1/energy/accounts?page=2"
+    fake_server.add("GET", "/v1/energy/accounts", json={"data": [], "links": {"next": loop}},
+                    repeat=True)
+    async with aiohttp.ClientSession() as session:
+        with pytest.raises(api.OpenfeedApiError) as err:
+            await _client(session, dpop_key, base).energy_accounts()
+    assert err.value.code == "invalid_next_link"
+    assert len(fake_server.requests) == 2
+
+
+def test_same_origin():
+    assert api.same_origin("https://api.openfeed.au/v1/x?y=1", "https://api.openfeed.au")
+    assert not api.same_origin("http://api.openfeed.au/v1/x", "https://api.openfeed.au")
+    assert not api.same_origin("https://api.openfeed.au:8443/v1", "https://api.openfeed.au")
+    assert not api.same_origin("https://api.openfeed.au.evil.example/v1", "https://api.openfeed.au")

@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urljoin, urlsplit
 
 import aiohttp
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -22,6 +22,9 @@ from yarl import URL
 from .crypto import dpop_proof
 
 TokenGetter = Callable[[], Awaitable[str]]
+
+# A collection longer than this many pages is treated as a server fault.
+MAX_PAGES = 100
 
 
 class OpenfeedApiError(Exception):
@@ -63,6 +66,12 @@ class RateLimitedError(OpenfeedApiError):
 
 class EnforcementError(OpenfeedApiError):
     """403 with an empty body: a transient enforcement failure."""
+
+
+def same_origin(url: str, base: str) -> bool:
+    """True when url has the same scheme, host and port as base."""
+    a, b = urlsplit(url), urlsplit(base)
+    return (a.scheme.lower(), a.hostname, a.port) == (b.scheme.lower(), b.hostname, b.port)
 
 
 def path_segment(value: str) -> str:
@@ -138,15 +147,33 @@ class OpenfeedClient:
     async def get_collection(
         self, path: str, params: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]:
-        """GET every page of a collection, following links.next to the end."""
+        """GET every page of a collection, following links.next to the end.
+
+        The access token goes with every page, so a next link is only
+        followed when it stays on the API origin. A link that repeats, or a
+        collection longer than MAX_PAGES, stops with an error.
+        """
         url: str | None = self._url(path, {"limit": 1000, **(params or {})})
         items: list[dict[str, Any]] = []
+        seen: set[str] = set()
         while url:
+            if url in seen or len(seen) >= MAX_PAGES:
+                raise OpenfeedApiError(0, "invalid_next_link", "pagination did not end")
+            seen.add(url)
             body = await self._request("GET", url)
             data = body.get("data") or []
             items.extend(data if isinstance(data, list) else [data])
-            url = (body.get("links") or {}).get("next")
+            url = self._next_url(url, (body.get("links") or {}).get("next"))
         return items
+
+    def _next_url(self, current: str, link: Any) -> str | None:
+        """Resolve links.next and refuse any URL off the API origin."""
+        if not link:
+            return None
+        resolved = urljoin(current, str(link))
+        if not same_origin(resolved, self._base):
+            raise OpenfeedApiError(0, "invalid_next_link", "next link leaves the API origin")
+        return resolved
 
     # Energy ---------------------------------------------------------------
 

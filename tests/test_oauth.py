@@ -111,3 +111,35 @@ async def test_issuer_mismatch_rejected(fake_server, app_key, dpop_key):
         with pytest.raises(OpenfeedAuthError) as err:
             await auth.discover()
     assert err.value.error == "issuer_mismatch"
+
+
+@pytest.mark.parametrize(
+    "field", ["token_endpoint", "pushed_authorization_request_endpoint", "jwks_uri",
+              "authorization_endpoint", "revocation_endpoint"],
+)
+async def test_endpoint_off_issuer_origin_rejected(fake_server, app_key, dpop_key, field):
+    doc = {**_discovery(fake_server.url), field: "https://elsewhere.example/x"}
+    fake_server.add("GET", "/.well-known/openid-configuration", json=doc)
+    async with aiohttp.ClientSession() as session:
+        auth = _auth(app_key, dpop_key, session, fake_server.url)
+        with pytest.raises(OpenfeedAuthError) as err:
+            await auth.discover()
+    assert err.value.error == "invalid_discovery"
+
+
+async def test_plain_http_endpoint_on_https_issuer_rejected():
+    from custom_components.openfeed.oauth import Discovery
+
+    doc = _discovery("https://auth.openfeed.au")
+    doc["token_endpoint"] = "http://auth.openfeed.au/token"
+    with pytest.raises(OpenfeedAuthError):
+        Discovery.from_document(doc).check_origins()
+
+
+async def test_plain_http_issuer_rejected_unless_loopback():
+    from custom_components.openfeed.oauth import Discovery
+
+    with pytest.raises(OpenfeedAuthError):
+        Discovery.from_document(_discovery("http://auth.example")).check_origins()
+    Discovery.from_document(_discovery("http://127.0.0.1:8080")).check_origins()
+    Discovery.from_document(_discovery("https://auth.openfeed.au")).check_origins()
